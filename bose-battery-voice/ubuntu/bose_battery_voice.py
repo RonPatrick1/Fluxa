@@ -26,6 +26,7 @@ SPEAKERS = {speaker.id: speaker for speaker in (ELIZABETH, FREDDIE)}
 
 POLL_SECONDS = 2.0
 ANNOUNCEMENT_COOLDOWN_SECONDS = 60.0
+LOCAL_DEVICE_LABEL = "Ubuntu desktop"
 
 
 class DesktopBatteryError(RuntimeError):
@@ -93,17 +94,49 @@ def active_audio_route(speaker: Speaker, runner: Callable[..., str] = run_text) 
         return False
 
 
-def read_battery(speaker: Speaker) -> int:
+def read_snapshot(speaker: Speaker) -> tuple[int, tuple[object, ...]]:
     connection = _load_bose_connection()
     try:
         with connection(speaker.address, timeout=5.0) as device:
-            return max(0, min(int(device.get_battery()), 100))
+            level = max(0, min(int(device.get_battery()), 100))
+            try:
+                sources = tuple(device.get_connected_devices())
+            except Exception:
+                sources = ()
+            return level, sources
     except Exception as error:
         raise DesktopBatteryError(str(error)) from error
 
 
-def speak(level: int, runner: Callable[..., str] = run_text) -> None:
-    runner(["spd-say", "--wait", f"Battery {level} percent."], timeout=20.0)
+def connected_devices_phrase(sources: Sequence[object]) -> str:
+    names: list[str] = []
+    for source in sources:
+        name = LOCAL_DEVICE_LABEL if source.is_current_device else source.name
+        if name and name.casefold() not in {item.casefold() for item in names}:
+            names.append(name)
+    if not names:
+        return LOCAL_DEVICE_LABEL
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return ", ".join(names[:-1]) + f", and {names[-1]}"
+
+
+def speak(
+    level: int,
+    sources: Sequence[object] = (),
+    runner: Callable[..., str] = run_text,
+) -> None:
+    devices = connected_devices_phrase(sources)
+    runner(
+        [
+            "spd-say",
+            "--wait",
+            f"{devices} connected to Elizabeth's Bose. Battery {level} percent.",
+        ],
+        timeout=20.0,
+    )
 
 
 def announce_if_active(
@@ -116,12 +149,12 @@ def announce_if_active(
         raise DesktopBatteryError(f"{speaker.name} is not connected")
     if not active_audio_route(speaker, runner):
         raise DesktopBatteryError(f"{speaker.name} is not the current audio output")
-    level = read_battery(speaker)
+    level, sources = read_snapshot(speaker)
     if not active_audio_route(speaker, runner):
         raise DesktopBatteryError(f"{speaker.name} stopped being the audio output")
     if not force and not bluetooth_connected(speaker, runner):
         raise DesktopBatteryError(f"{speaker.name} disconnected before the announcement")
-    speak(level, runner)
+    speak(level, sources, runner)
     return level
 
 

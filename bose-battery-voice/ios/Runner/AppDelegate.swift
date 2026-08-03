@@ -10,13 +10,20 @@ private struct FamilySpeaker {
   let enabledByDefault: Bool
 }
 
+private struct BoseConnectedSource {
+  let name: String
+  let isCurrentDevice: Bool
+}
+
 private final class BoseBatteryCoordinator: NSObject {
   private static let channelName = "com.liamapp.bose_battery_voice/control"
   private static let monitoringKey = "monitoring"
   private static let lastEventKey = "last_event"
   private static let speechTemplateKey = "speech_template"
   private static let deviceLabelKey = "device_label"
-  private static let defaultSpeechTemplate = "Battery {battery} percent."
+  private static let legacySpeechTemplate = "Battery {battery} percent."
+  private static let defaultSpeechTemplate =
+    "{devices} connected to {speaker}. Battery {battery} percent."
   private static let boseService = CBUUID(string: "FEBE")
   private static let secureCharacteristic = CBUUID(
     string: "C65B8F2F-AEE2-4C89-B758-BC4892D6F2D8"
@@ -48,6 +55,9 @@ private final class BoseBatteryCoordinator: NSObject {
   private var speakerIDsByPeripheral: [UUID: String] = [:]
   private var controlCharacteristics: [UUID: CBCharacteristic] = [:]
   private var receiveBuffers: [UUID: Data] = [:]
+  private var pendingBatteryLevels: [UUID: Int] = [:]
+  private var pendingSourceAddresses: [UUID: [Data]] = [:]
+  private var pendingConnectedSources: [UUID: [BoseConnectedSource]] = [:]
   private var forceRequests = Set<String>()
   private var utteranceSpeakerIDs: [ObjectIdentifier: String] = [:]
   private let synthesizer = AVSpeechSynthesizer()
@@ -139,6 +149,19 @@ private final class BoseBatteryCoordinator: NSObject {
       startScanning()
       record("Looking for \(speaker(id: id)!.name)")
       result(nil)
+    case "testAnnouncement":
+      guard let activeSpeaker = speakers.first(where: { activeAudioRouteMatches($0) }) else {
+        result(FlutterError(
+          code: "audio_route",
+          message: "Choose Elizabeth's Bose or Freddie's Bose as the audio output before testing.",
+          details: nil
+        ))
+        return
+      }
+      forceRequests.insert(activeSpeaker.id)
+      startScanning()
+      record("Testing the custom announcement on \(activeSpeaker.name)")
+      result(nil)
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -166,7 +189,10 @@ private final class BoseBatteryCoordinator: NSObject {
   private var speechTemplate: String {
     let value = defaults.string(forKey: Self.speechTemplateKey)?
       .trimmingCharacters(in: .whitespacesAndNewlines)
-    return value?.isEmpty == false ? value! : Self.defaultSpeechTemplate
+    guard value?.isEmpty == false, value != Self.legacySpeechTemplate else {
+      return Self.defaultSpeechTemplate
+    }
+    return value!
   }
 
   private var deviceLabel: String {
@@ -175,10 +201,33 @@ private final class BoseBatteryCoordinator: NSObject {
     return value?.isEmpty == false ? value! : UIDevice.current.model
   }
 
-  private func renderedSpeech(for speaker: FamilySpeaker, level: Int) -> String {
+  private func connectedDevicesPhrase(_ sources: [BoseConnectedSource]) -> String {
+    var names: [String] = []
+    for source in sources {
+      let name = source.isCurrentDevice ? deviceLabel : source.name
+      if !name.isEmpty && !names.contains(where: {
+        $0.caseInsensitiveCompare(name) == .orderedSame
+      }) {
+        names.append(name)
+      }
+    }
+    switch names.count {
+    case 0: return deviceLabel
+    case 1: return names[0]
+    case 2: return "\(names[0]) and \(names[1])"
+    default: return names.dropLast().joined(separator: ", ") + ", and " + names.last!
+    }
+  }
+
+  private func renderedSpeech(
+    for speaker: FamilySpeaker,
+    level: Int,
+    connectedSources: [BoseConnectedSource]
+  ) -> String {
     speechTemplate
       .replacingOccurrences(of: "{speaker}", with: speaker.name)
       .replacingOccurrences(of: "{battery}", with: String(max(0, min(level, 100))))
+      .replacingOccurrences(of: "{devices}", with: connectedDevicesPhrase(connectedSources))
       .replacingOccurrences(of: "{device}", with: deviceLabel)
   }
 
@@ -270,6 +319,21 @@ private final class BoseBatteryCoordinator: NSObject {
     send([0x02, 0x02, 0x01, 0x00], to: peripheral)
   }
 
+  private func requestConnectedSources(from peripheral: CBPeripheral) {
+    send([0x04, 0x04, 0x01, 0x00], to: peripheral)
+  }
+
+  private func requestNextSource(from peripheral: CBPeripheral) {
+    let identifier = peripheral.identifier
+    guard var addresses = pendingSourceAddresses[identifier], !addresses.isEmpty else {
+      finishPendingBattery(from: peripheral)
+      return
+    }
+    let address = addresses.removeFirst()
+    pendingSourceAddresses[identifier] = addresses
+    send([0x04, 0x05, 0x01, 0x06] + [UInt8](address), to: peripheral)
+  }
+
   private func consume(_ incoming: Data, from peripheral: CBPeripheral) {
     var data = incoming
     if data.first == 0 { data.removeFirst() }
@@ -295,18 +359,80 @@ private final class BoseBatteryCoordinator: NSObject {
     let operation = bytes[2] & 0x0f
 
     if operation == 0x04 {
-      fail(peripheral, message: "The speaker rejected the battery request")
+      if pendingBatteryLevels[peripheral.identifier] != nil {
+        // Connected-source discovery is optional on older firmware. Preserve
+        // the already-read battery value and use this device's custom label.
+        finishPendingBattery(from: peripheral)
+      } else {
+        fail(peripheral, message: "The speaker rejected the battery request")
+      }
       return
     }
     guard operation == 0x03 else { return }
     if block == 0x00 && function == 0x01 {
       requestBattery(from: peripheral)
     } else if block == 0x02 && function == 0x02 && bytes.count >= 5 {
-      finishBattery(Int(bytes[4]), from: peripheral)
+      pendingBatteryLevels[peripheral.identifier] = Int(bytes[4])
+      pendingConnectedSources[peripheral.identifier] = []
+      requestConnectedSources(from: peripheral)
+    } else if block == 0x04 && function == 0x04 {
+      let payload = Array(bytes.dropFirst(4))
+      var addresses: [Data] = []
+      if payload.count >= 7 {
+        var offset = 1
+        while offset + 6 <= payload.count {
+          addresses.append(Data(payload[offset..<(offset + 6)]))
+          offset += 6
+        }
+      }
+      pendingSourceAddresses[peripheral.identifier] = addresses
+      requestNextSource(from: peripheral)
+    } else if block == 0x04 && function == 0x05 {
+      let payload = Array(bytes.dropFirst(4))
+      if let source = parseConnectedSource(payload) {
+        var sources = pendingConnectedSources[peripheral.identifier] ?? []
+        if !sources.contains(where: {
+          $0.name.caseInsensitiveCompare(source.name) == .orderedSame
+        }) {
+          sources.append(source)
+        }
+        pendingConnectedSources[peripheral.identifier] = sources
+        if sources.count >= 2 {
+          finishPendingBattery(from: peripheral)
+          return
+        }
+      }
+      requestNextSource(from: peripheral)
     }
   }
 
-  private func finishBattery(_ level: Int, from peripheral: CBPeripheral) {
+  private func parseConnectedSource(_ payload: [UInt8]) -> BoseConnectedSource? {
+    // Six address bytes, status, two reserved bytes, then a UTF-8 name.
+    guard payload.count >= 10 else { return nil }
+    let status = payload[6]
+    guard status == 0x01 || status == 0x03 else { return nil }
+    let nullAndWhitespace = CharacterSet.whitespacesAndNewlines.union(
+      CharacterSet(charactersIn: "\0")
+    )
+    let name = String(bytes: payload.dropFirst(9), encoding: .utf8)?
+      .trimmingCharacters(in: nullAndWhitespace) ?? ""
+    guard !name.isEmpty else { return nil }
+    return BoseConnectedSource(name: name, isCurrentDevice: status == 0x03)
+  }
+
+  private func finishPendingBattery(from peripheral: CBPeripheral) {
+    let identifier = peripheral.identifier
+    guard let level = pendingBatteryLevels.removeValue(forKey: identifier) else { return }
+    let sources = pendingConnectedSources.removeValue(forKey: identifier) ?? []
+    pendingSourceAddresses.removeValue(forKey: identifier)
+    finishBattery(level, connectedSources: sources, from: peripheral)
+  }
+
+  private func finishBattery(
+    _ level: Int,
+    connectedSources: [BoseConnectedSource],
+    from peripheral: CBPeripheral
+  ) {
     guard let id = speakerIDsByPeripheral[peripheral.identifier],
           let speaker = speaker(id: id) else { return }
     let forced = forceRequests.remove(speaker.id) != nil
@@ -336,13 +462,20 @@ private final class BoseBatteryCoordinator: NSObject {
       return
     }
 
-    let utterance = AVSpeechUtterance(string: renderedSpeech(for: speaker, level: level))
+    let connectedDevices = connectedDevicesPhrase(connectedSources)
+    let utterance = AVSpeechUtterance(
+      string: renderedSpeech(
+        for: speaker,
+        level: level,
+        connectedSources: connectedSources
+      )
+    )
     utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
     utterance.rate = AVSpeechUtteranceDefaultSpeechRate
     utteranceSpeakerIDs[ObjectIdentifier(utterance)] = speaker.id
     synthesizer.speak(utterance)
     defaults.set(Date().timeIntervalSince1970, forKey: lastKey)
-    record("\(speaker.name): announcing \(level)%")
+    record("\(speaker.name): announcing \(level)% for \(connectedDevices)")
   }
 
   private func finishEphemeral(_ peripheral: CBPeripheral) {
@@ -353,6 +486,9 @@ private final class BoseBatteryCoordinator: NSObject {
   }
 
   private func fail(_ peripheral: CBPeripheral, message: String) {
+    pendingBatteryLevels.removeValue(forKey: peripheral.identifier)
+    pendingSourceAddresses.removeValue(forKey: peripheral.identifier)
+    pendingConnectedSources.removeValue(forKey: peripheral.identifier)
     if let id = speakerIDsByPeripheral[peripheral.identifier] {
       forceRequests.remove(id)
     }
@@ -425,6 +561,9 @@ extension BoseBatteryCoordinator: CBCentralManagerDelegate {
   ) {
     controlCharacteristics.removeValue(forKey: peripheral.identifier)
     receiveBuffers.removeValue(forKey: peripheral.identifier)
+    pendingBatteryLevels.removeValue(forKey: peripheral.identifier)
+    pendingSourceAddresses.removeValue(forKey: peripheral.identifier)
+    pendingConnectedSources.removeValue(forKey: peripheral.identifier)
     if let id = speakerIDsByPeripheral[peripheral.identifier],
        let speaker = speaker(id: id), shouldUse(speaker) {
       startScanning()

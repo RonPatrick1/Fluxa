@@ -62,4 +62,16 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('Customize announcement'), findsNothing);
   });
+
+  testWidgets('offers a custom announcement test button', (tester) async {
+    await tester.pumpWidget(const BatteryVoiceApp());
+    await tester.pumpAndSettle();
+
+    expect(find.text('Test custom announcement'), findsOneWidget);
+    await tester.tap(find.text('Test custom announcement'));
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+  });
 }

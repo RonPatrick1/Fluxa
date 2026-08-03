@@ -1,8 +1,8 @@
 package com.liamapp.bose_battery_voice
 
 import android.Manifest
-import android.content.ComponentName
 import android.content.Intent
+import android.content.ActivityNotFoundException
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -43,12 +43,10 @@ class MainActivity : FlutterActivity() {
             "requestPermissions" -> requestBluetoothPermissions(result)
             "setStatusNotifications" -> setStatusNotifications(call, result)
             "requestUnrestrictedBattery" -> {
-                requestUnrestrictedBattery()
-                result.success(null)
+                result.success(requestUnrestrictedBattery())
             }
             "openSamsungBackgroundSettings" -> {
-                openSamsungBackgroundSettings()
-                result.success(null)
+                result.success(openSamsungBackgroundSettings())
             }
             "openNotificationSettings" -> {
                 openNotificationSettings()
@@ -91,6 +89,16 @@ class MainActivity : FlutterActivity() {
                 val intent = Intent(this, BoseMonitoringService::class.java)
                     .setAction(BoseMonitoringService.ACTION_ANNOUNCE)
                     .putExtra(BoseMonitoringService.EXTRA_SPEAKER_ID, id)
+                startForegroundServiceCompat(intent)
+                result.success(null)
+            }
+            "testAnnouncement" -> {
+                if (!hasRequiredPermissions()) {
+                    result.error("permission", "Bluetooth permission is required.", null)
+                    return
+                }
+                val intent = Intent(this, BoseMonitoringService::class.java)
+                    .setAction(BoseMonitoringService.ACTION_TEST_ACTIVE)
                 startForegroundServiceCompat(intent)
                 result.success(null)
             }
@@ -232,35 +240,46 @@ class MainActivity : FlutterActivity() {
         return powerManager.isIgnoringBatteryOptimizations(packageName)
     }
 
-    private fun requestUnrestrictedBattery() {
-        if (isBatteryOptimizationIgnored()) return
-        val request = Intent(
+    private fun requestUnrestrictedBattery(): Boolean {
+        if (isBatteryOptimizationIgnored()) return true
+        val candidates = listOf(
+            Intent(
             Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
             Uri.parse("package:$packageName"),
-        )
-        if (request.resolveActivity(packageManager) != null) {
-            startActivity(request)
-        } else {
-            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-        }
-    }
-
-    private fun openSamsungBackgroundSettings() {
-        val candidates = listOf(
-            Intent().setComponent(
-                ComponentName(
-                    "com.samsung.android.lool",
-                    "com.samsung.android.sm.battery.ui.setting.AppPowerManagementActivity",
-                ),
             ),
-            Intent("com.samsung.android.sm.ACTION_BATTERY")
-                .setPackage("com.samsung.android.lool"),
             Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
                 .setData(Uri.parse("package:$packageName")),
         )
-        val target = candidates.firstOrNull { it.resolveActivity(packageManager) != null }
-        if (target != null) startActivity(target)
+        return startFirstAvailable(candidates)
+    }
+
+    private fun openSamsungBackgroundSettings(): Boolean {
+        val candidates = listOf(
+            Intent("com.samsung.android.sm.ACTION_BATTERY")
+                .setPackage("com.samsung.android.lool"),
+            Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS),
+            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                .setData(Uri.parse("package:$packageName")),
+        )
+        return startFirstAvailable(candidates)
+    }
+
+    private fun startFirstAvailable(candidates: List<Intent>): Boolean {
+        for (intent in candidates) {
+            if (intent.resolveActivity(packageManager) == null) continue
+            try {
+                startActivity(intent)
+                return true
+            } catch (_: ActivityNotFoundException) {
+            } catch (_: SecurityException) {
+                // Some Samsung builds resolve private Device Care activities
+                // but then reject third-party launches. Continue to Android's
+                // public battery or per-app settings instead.
+            }
+        }
+        return false
     }
 
     private fun startMonitor() {

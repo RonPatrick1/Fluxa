@@ -40,6 +40,7 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
         private const val TAG = "BoseBatteryVoice"
         const val ACTION_START = "com.liamapp.bose_battery_voice.START"
         const val ACTION_ANNOUNCE = "com.liamapp.bose_battery_voice.ANNOUNCE"
+        const val ACTION_TEST_ACTIVE = "com.liamapp.bose_battery_voice.TEST_ACTIVE"
         const val EXTRA_SPEAKER_ID = "speaker_id"
         private const val CHANNEL_ID = "battery_voice_monitor"
         private const val NOTIFICATION_ID = 1042
@@ -49,6 +50,7 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
     private data class PendingSpeech(
         val speaker: FamilySpeaker,
         val level: Int,
+        val connectedDevices: String,
         val previousVolume: Int,
         val focusRequest: Any?,
     )
@@ -96,6 +98,15 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
         if (intent?.action == ACTION_ANNOUNCE) {
             val speaker = BatteryVoiceSettings.speaker(intent.getStringExtra(EXTRA_SPEAKER_ID))
             if (speaker != null) scheduleAnnouncement(speaker, force = true, attempt = 0)
+        } else if (intent?.action == ACTION_TEST_ACTIVE) {
+            val speaker = BatteryVoiceSettings.speakers.firstOrNull { isActiveAudioRoute(it) }
+            if (speaker == null) {
+                record("Choose a family Bose as the active audio output before testing")
+                stopIfEphemeral()
+            } else {
+                record("Testing the custom announcement on ${speaker.name}")
+                scheduleAnnouncement(speaker, force = true, attempt = 0)
+            }
         }
         return START_STICKY
     }
@@ -207,8 +218,14 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
         updateNotification("Reading ${speaker.name} battery")
         executor.execute {
             try {
-                val level = BoseBatteryReader.read(device).coerceIn(0, 100)
-                handler.post { speak(speaker, level) }
+                val snapshot = BoseBatteryReader.read(device)
+                handler.post {
+                    speak(
+                        speaker,
+                        snapshot.level.coerceIn(0, 100),
+                        snapshot.connectedSources,
+                    )
+                }
             } catch (error: Exception) {
                 record("Could not read ${speaker.name}: ${error.message ?: "Bluetooth error"}")
                 stopIfEphemeral()
@@ -216,7 +233,11 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun speak(speaker: FamilySpeaker, level: Int) {
+    private fun speak(
+        speaker: FamilySpeaker,
+        level: Int,
+        connectedSources: List<BoseConnectedSource>,
+    ) {
         if (!ttsReady) {
             record("Battery $level%, but Android text-to-speech is not ready")
             stopIfEphemeral()
@@ -242,13 +263,18 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
         }
 
         val utteranceId = "bose-${speaker.id}-${System.currentTimeMillis()}"
+        val connectedDevices = BatteryVoiceSettings.connectedDevicesPhrase(
+            BatteryVoiceSettings.deviceLabel(this),
+            connectedSources,
+        )
         pendingSpeech[utteranceId] = PendingSpeech(
             speaker = speaker,
             level = level,
+            connectedDevices = connectedDevices,
             previousVolume = previousVolume,
             focusRequest = focus.request,
         )
-        record("${speaker.name}: preparing to speak $level%")
+        record("${speaker.name}: found $connectedDevices; preparing to speak $level%")
         handler.postDelayed(
             {
                 if (!isActiveAudioRoute(speaker)) {
@@ -260,7 +286,12 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
                     return@postDelayed
                 }
                 val result = textToSpeech?.speak(
-                    BatteryVoiceSettings.renderSpeech(this, speaker, level),
+                    BatteryVoiceSettings.renderSpeech(
+                        this,
+                        speaker,
+                        level,
+                        connectedSources,
+                    ),
                     TextToSpeech.QUEUE_FLUSH,
                     null,
                     utteranceId,
@@ -285,7 +316,10 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
                     System.currentTimeMillis(),
                 )
                 .apply()
-            record("${pending.speaker.name}: announced ${pending.level}% at ${timestamp()}")
+            record(
+                "${pending.speaker.name}: announced ${pending.level}% for " +
+                    "${pending.connectedDevices} at ${timestamp()}",
+            )
         } else {
             record("Could not speak ${pending.level}%${detail?.let { ": $it" }.orEmpty()}")
         }

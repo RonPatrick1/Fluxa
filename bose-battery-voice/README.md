@@ -8,17 +8,22 @@ speakers:
 - **Freddie's Bose** (SoundLink Flex Gen 2) is disabled by default because its
   onboard battery announcement still works.
 
-The helper reads only a battery percentage. It does not use a Bose account,
-contact Bose, rename a speaker, change speaker settings, or transfer firmware.
+The helper reads the battery percentage and the names/status of connected audio
+sources. It does not use a Bose account, contact Bose, rename a speaker, change
+speaker settings, or transfer firmware.
 
 ## Behavior
 
 After a selected speaker connects, the helper verifies that it is the active
-media output, reads the Bose battery value, and speaks the configured sentence.
-The default is `Battery 80 percent.` The mobile app accepts any text and
-expands `{speaker}`, `{battery}`, and `{device}` placeholders. For example,
-`{device} connected to {speaker}. Battery {battery} percent.` can become
-`Ron's phone connected to Elizabeth's Bose. Battery 80 percent.` It will not
+media output, reads the Bose battery value and its active multipoint sources,
+and speaks the configured sentence. The default is
+`{devices} connected to {speaker}. Battery {battery} percent.` The mobile app
+accepts any text and expands `{speaker}`, `{battery}`, `{device}`, and
+`{devices}` placeholders. `{device}` is the custom name of the phone or tablet
+running the helper. `{devices}` contains both connected source names when Bose
+reports a multipoint pair. For example, it can become
+`Ron's phone and Ubuntu desktop connected to Elizabeth's Bose. Battery 80 percent.`
+It will not
 deliberately speak through the phone, tablet, computer, or the other Bose
 speaker. A 60-second cooldown suppresses duplicate connection events.
 
@@ -32,7 +37,9 @@ word before the prior audio state is restored.
 
 The Android and Ubuntu implementations use read-only BMAP over Bose's RFCOMM
 control service. iOS cannot open arbitrary classic RFCOMM services, so it uses
-the same read-only packets through Bose's BLE service (`FEBE`).
+the same read-only packets through Bose's BLE service (`FEBE`). If a speaker
+does not support the optional source-name packets, the announcement falls back
+to that helper's custom device name.
 
 ## Android phone and tablet
 
@@ -58,9 +65,10 @@ Open **Bose Battery Voice**, allow Nearby Devices, and turn on Monitoring.
 The app then requests Android's **Unrestricted** battery mode when it is not
 already granted and shows the current result in its Background reliability
 card. Android requires the user to approve that protected system prompt.
-On Samsung devices, use the card's shortcut to **Background usage limits**,
-open **Never sleeping apps**, tap **+**, and add Bose Battery Voice; Samsung
-does not provide third-party apps an API for silently editing that list.
+On Samsung devices, use the card's shortcut to open Device Care's battery page,
+then open **Background usage limits** → **Never sleeping apps**, tap **+**, and
+add Bose Battery Voice. Samsung does not provide third-party apps an API for
+silently editing that list.
 
 Status notifications are off by default. On Android 13 and newer, denying the
 optional notification permission keeps the required foreground-service entry

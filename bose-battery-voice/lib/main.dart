@@ -66,7 +66,8 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
       _status['batteryOptimizationIgnored'] == true;
   bool get _isSamsung => _status['isSamsung'] == true;
   String get _speechTemplate =>
-      _status['speechTemplate']?.toString() ?? 'Battery {battery} percent.';
+      _status['speechTemplate']?.toString() ??
+      '{devices} connected to {speaker}. Battery {battery} percent.';
   String get _deviceLabel =>
       _status['deviceLabel']?.toString() ??
       (Platform.isIOS ? 'iPhone' : 'Android phone');
@@ -74,6 +75,7 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
   String get _announcementPreview => _speechTemplate
       .replaceAll('{speaker}', "Elizabeth's Bose")
       .replaceAll('{battery}', '100')
+      .replaceAll('{devices}', _deviceLabel)
       .replaceAll('{device}', _deviceLabel);
 
   @override
@@ -185,6 +187,19 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
     }
   }
 
+  Future<void> _testAnnouncement() async {
+    try {
+      await _channel.invokeMethod<void>('testAnnouncement');
+      _show(
+        'Custom announcement test started on the active family Bose speaker.',
+      );
+      await Future<void>.delayed(const Duration(seconds: 2));
+      await _refresh(quiet: true);
+    } on PlatformException catch (error) {
+      _show(error.message ?? error.code);
+    }
+  }
+
   Future<void> _setStatusNotifications(bool value) async {
     try {
       final effective = await _channel.invokeMethod<bool>(
@@ -212,7 +227,12 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
 
   Future<void> _requestUnrestrictedBattery() async {
     try {
-      await _channel.invokeMethod<void>('requestUnrestrictedBattery');
+      final opened = await _channel.invokeMethod<bool>(
+        'requestUnrestrictedBattery',
+      );
+      if (opened == false) {
+        _show('Android could not open battery settings on this device.');
+      }
     } on PlatformException catch (error) {
       _show(error.message ?? error.code);
     }
@@ -220,7 +240,12 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
 
   Future<void> _openSamsungBackgroundSettings() async {
     try {
-      await _channel.invokeMethod<void>('openSamsungBackgroundSettings');
+      final opened = await _channel.invokeMethod<bool>(
+        'openSamsungBackgroundSettings',
+      );
+      if (opened == false) {
+        _show('Android could not open background battery settings.');
+      }
     } on PlatformException catch (error) {
       _show(error.message ?? error.code);
     }
@@ -289,6 +314,7 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
                   notificationPermissionGranted: _notificationPermissionGranted,
                   platform: platform,
                   onEdit: _editAnnouncement,
+                  onTest: _testAnnouncement,
                   onNotificationsChanged: _setStatusNotifications,
                   onOpenNotificationSettings: _openNotificationSettings,
                 ),
@@ -355,8 +381,8 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
                 ),
                 const SizedBox(height: 14),
                 const Text(
-                  'The app reads only the battery percentage. It never contacts '
-                  'Bose, changes settings, or transfers firmware.',
+                  'The app reads the battery and connected device names. It never '
+                  'contacts Bose, changes settings, or transfers firmware.',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Color(0xFF627D98)),
                 ),
@@ -446,7 +472,10 @@ class _AnnouncementEditorDialogState extends State<_AnnouncementEditorDialog> {
               maxLines: 5,
               decoration: const InputDecoration(
                 labelText: 'What it should say',
-                helperText: 'Use {speaker}, {battery}, and {device}',
+                helperText:
+                    'Use {devices} for every connected source; {device} means this device. '
+                    'Also supports {speaker} and {battery}.',
+                helperMaxLines: 2,
                 alignLabelWithHint: true,
               ),
             ),
@@ -533,6 +562,7 @@ class _AnnouncementCard extends StatelessWidget {
     required this.notificationPermissionGranted,
     required this.platform,
     required this.onEdit,
+    required this.onTest,
     required this.onNotificationsChanged,
     required this.onOpenNotificationSettings,
   });
@@ -543,6 +573,7 @@ class _AnnouncementCard extends StatelessWidget {
   final bool notificationPermissionGranted;
   final String platform;
   final VoidCallback onEdit;
+  final VoidCallback onTest;
   final ValueChanged<bool> onNotificationsChanged;
   final VoidCallback onOpenNotificationSettings;
 
@@ -583,6 +614,17 @@ class _AnnouncementCard extends StatelessWidget {
             Text(
               'This device: $deviceLabel',
               style: const TextStyle(color: Color(0xFF627D98)),
+            ),
+            const SizedBox(height: 3),
+            const Text(
+              '{devices} automatically adds the second multipoint source when connected.',
+              style: TextStyle(color: Color(0xFF627D98)),
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: onTest,
+              icon: const Icon(Icons.volume_up, size: 18),
+              label: const Text('Test custom announcement'),
             ),
             const Divider(height: 24),
             SwitchListTile(

@@ -32,6 +32,12 @@ class Packet:
 
 
 @dataclass(frozen=True)
+class ConnectedDevice:
+    name: str
+    is_current_device: bool
+
+
+@dataclass(frozen=True)
 class VoicePromptConfig:
     enabled: bool
     language: int
@@ -197,6 +203,31 @@ class BoseConnection:
             raise BoseError("Speaker returned an empty battery reply")
         return reply.payload[0]
 
+    def get_connected_devices(self) -> tuple[ConnectedDevice, ...]:
+        """Return the names of up to two active multipoint sources."""
+        self._send(Packet(0x04, 0x04, 0x01, b""))
+        paired = self._receive_expected(0x04, 0x04, 0x03).payload
+        addresses = tuple(
+            paired[offset : offset + 6]
+            for offset in range(1, len(paired), 6)
+            if offset + 6 <= len(paired)
+        )
+        connected: list[ConnectedDevice] = []
+        for address in addresses:
+            self._send(Packet(0x04, 0x05, 0x01, address))
+            payload = self._receive_expected(0x04, 0x05, 0x03).payload
+            if len(payload) < 10 or payload[6] not in (0x01, 0x03):
+                continue
+            name = payload[9:].decode("utf-8").rstrip("\0").strip()
+            if not name or any(item.name.casefold() == name.casefold() for item in connected):
+                continue
+            connected.append(
+                ConnectedDevice(name=name, is_current_device=payload[6] == 0x03)
+            )
+            if len(connected) == 2:
+                break
+        return tuple(connected)
+
     def get_voice_prompts(self) -> VoicePromptConfig:
         self._send(Packet(0x01, 0x03, 0x01, b""))
         reply = self._receive_expected(0x01, 0x03, 0x03)
@@ -254,6 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
     for command, help_text in (
         ("info", "show the stored name and battery percentage"),
         ("battery", "show the battery percentage"),
+        ("devices", "show the currently connected multipoint sources"),
         ("voice-prompts", "show voice- and battery-prompt capabilities"),
         ("firmware-status", "show read-only firmware transfer state"),
     ):
@@ -302,6 +334,13 @@ def main() -> int:
                 print(f"{old_name} -> {new_name}")
             elif args.command == "battery":
                 print(f"{speaker.get_battery()}%")
+            elif args.command == "devices":
+                devices = speaker.get_connected_devices()
+                if not devices:
+                    print("No connected sources reported")
+                for device in devices:
+                    role = "this device" if device.is_current_device else "other device"
+                    print(f"{device.name} ({role})")
             elif args.command == "voice-prompts":
                 print_voice_prompts(speaker.get_voice_prompts())
             elif args.command == "firmware-status":

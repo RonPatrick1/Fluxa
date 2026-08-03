@@ -2,6 +2,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 MODULE_PATH = Path(__file__).with_name("bose_battery_voice.py")
@@ -35,6 +36,17 @@ class DesktopBatteryVoiceTests(unittest.TestCase):
         self.assertEqual(
             MODULE.selected_speakers("both"),
             (MODULE.ELIZABETH, MODULE.FREDDIE),
+        )
+
+    def test_connected_devices_phrase_names_both_multipoint_sources(self):
+        sources = (
+            SimpleNamespace(name="Workstation", is_current_device=True),
+            SimpleNamespace(name="Ron's phone", is_current_device=False),
+        )
+
+        self.assertEqual(
+            MODULE.connected_devices_phrase(sources),
+            "Ubuntu desktop and Ron's phone",
         )
 
 
