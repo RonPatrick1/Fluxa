@@ -55,6 +55,13 @@ adb install -r build/app/outputs/flutter-apk/app-debug.apk
 ```
 
 Open **Bose Battery Voice**, allow Nearby Devices, and turn on Monitoring.
+The app then requests Android's **Unrestricted** battery mode when it is not
+already granted and shows the current result in its Background reliability
+card. Android requires the user to approve that protected system prompt.
+On Samsung devices, use the card's shortcut to **Background usage limits**,
+open **Never sleeping apps**, tap **+**, and add Bose Battery Voice; Samsung
+does not provide third-party apps an API for silently editing that list.
+
 Status notifications are off by default. On Android 13 and newer, denying the
 optional notification permission keeps the required foreground-service entry
 out of the notification drawer; Android may still show the running helper in

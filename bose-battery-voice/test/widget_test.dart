@@ -46,4 +46,20 @@ void main() {
     );
     expect(find.textContaining('never contacts Bose'), findsOneWidget);
   });
+
+  testWidgets('saves a custom device name without a lifecycle error', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const BatteryVoiceApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Customize'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, "Ron's phone");
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Customize announcement'), findsNothing);
+  });
 }

@@ -1,11 +1,12 @@
 package com.liamapp.bose_battery_voice
 
 import android.Manifest
-import android.content.Context
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.annotation.NonNull
 import io.flutter.embedding.android.FlutterActivity
@@ -41,6 +42,14 @@ class MainActivity : FlutterActivity() {
             "getStatus" -> result.success(status())
             "requestPermissions" -> requestBluetoothPermissions(result)
             "setStatusNotifications" -> setStatusNotifications(call, result)
+            "requestUnrestrictedBattery" -> {
+                requestUnrestrictedBattery()
+                result.success(null)
+            }
+            "openSamsungBackgroundSettings" -> {
+                openSamsungBackgroundSettings()
+                result.success(null)
+            }
             "openNotificationSettings" -> {
                 openNotificationSettings()
                 result.success(null)
@@ -100,6 +109,8 @@ class MainActivity : FlutterActivity() {
                 false,
             ),
             "notificationPermissionGranted" to hasNotificationPermission(),
+            "batteryOptimizationIgnored" to isBatteryOptimizationIgnored(),
+            "isSamsung" to Build.MANUFACTURER.equals("samsung", ignoreCase = true),
             "speechTemplate" to BatteryVoiceSettings.speechTemplate(this),
             "deviceLabel" to BatteryVoiceSettings.deviceLabel(this),
             "elizabethEnabled" to preferences.getBoolean(
@@ -214,6 +225,42 @@ class MainActivity : FlutterActivity() {
             .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
             .setData(Uri.parse("package:$packageName"))
         startActivity(intent)
+    }
+
+    private fun isBatteryOptimizationIgnored(): Boolean {
+        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+        return powerManager.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    private fun requestUnrestrictedBattery() {
+        if (isBatteryOptimizationIgnored()) return
+        val request = Intent(
+            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            Uri.parse("package:$packageName"),
+        )
+        if (request.resolveActivity(packageManager) != null) {
+            startActivity(request)
+        } else {
+            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        }
+    }
+
+    private fun openSamsungBackgroundSettings() {
+        val candidates = listOf(
+            Intent().setComponent(
+                ComponentName(
+                    "com.samsung.android.lool",
+                    "com.samsung.android.sm.battery.ui.setting.AppPowerManagementActivity",
+                ),
+            ),
+            Intent("com.samsung.android.sm.ACTION_BATTERY")
+                .setPackage("com.samsung.android.lool"),
+            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                .setData(Uri.parse("package:$packageName")),
+        )
+        val target = candidates.firstOrNull { it.resolveActivity(packageManager) != null }
+        if (target != null) startActivity(target)
     }
 
     private fun startMonitor() {

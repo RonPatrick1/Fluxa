@@ -51,6 +51,7 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
 
   Map<String, dynamic> _status = const {};
   bool _loading = true;
+  bool _backgroundSetupRequested = false;
   String? _error;
   Timer? _refreshTimer;
 
@@ -61,6 +62,9 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
       _status['showStatusNotifications'] == true;
   bool get _notificationPermissionGranted =>
       _status['notificationPermissionGranted'] == true;
+  bool get _batteryOptimizationIgnored =>
+      _status['batteryOptimizationIgnored'] == true;
+  bool get _isSamsung => _status['isSamsung'] == true;
   String get _speechTemplate =>
       _status['speechTemplate']?.toString() ?? 'Battery {battery} percent.';
   String get _deviceLabel =>
@@ -106,11 +110,25 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
         'getStatus',
       );
       if (!mounted) return;
+      final nextStatus = value ?? const <String, dynamic>{};
+      final shouldRequestBackgroundSetup =
+          !_backgroundSetupRequested &&
+          nextStatus['platform'] == 'Android' &&
+          nextStatus['monitoring'] == true &&
+          nextStatus['batteryOptimizationIgnored'] != true;
+      if (shouldRequestBackgroundSetup) {
+        _backgroundSetupRequested = true;
+      }
       setState(() {
-        _status = value ?? const {};
+        _status = nextStatus;
         _error = null;
         _loading = false;
       });
+      if (shouldRequestBackgroundSetup) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _requestUnrestrictedBattery();
+        });
+      }
     } on PlatformException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -137,6 +155,10 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
         return;
       }
       await _channel.invokeMethod<void>('setMonitoring', {'enabled': value});
+      if (value && _status['platform'] == 'Android') {
+        _backgroundSetupRequested = true;
+        await _requestUnrestrictedBattery();
+      }
       await _refresh();
     } on PlatformException catch (error) {
       _show(error.message ?? error.code);
@@ -188,70 +210,35 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
     }
   }
 
+  Future<void> _requestUnrestrictedBattery() async {
+    try {
+      await _channel.invokeMethod<void>('requestUnrestrictedBattery');
+    } on PlatformException catch (error) {
+      _show(error.message ?? error.code);
+    }
+  }
+
+  Future<void> _openSamsungBackgroundSettings() async {
+    try {
+      await _channel.invokeMethod<void>('openSamsungBackgroundSettings');
+    } on PlatformException catch (error) {
+      _show(error.message ?? error.code);
+    }
+  }
+
   Future<void> _editAnnouncement() async {
-    final templateController = TextEditingController(text: _speechTemplate);
-    final deviceController = TextEditingController(text: _deviceLabel);
-    final saved = await showDialog<bool>(
+    final settings = await showDialog<_AnnouncementSettings>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Customize announcement'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              TextField(
-                controller: deviceController,
-                maxLength: 80,
-                decoration: const InputDecoration(
-                  labelText: 'This device name',
-                  hintText: "Ron's phone",
-                ),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: templateController,
-                maxLength: 240,
-                minLines: 2,
-                maxLines: 5,
-                decoration: const InputDecoration(
-                  labelText: 'What it should say',
-                  helperText: 'Use {speaker}, {battery}, and {device}',
-                  alignLabelWithHint: true,
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Save'),
-          ),
-        ],
+      builder: (context) => _AnnouncementEditorDialog(
+        initialTemplate: _speechTemplate,
+        initialDeviceLabel: _deviceLabel,
       ),
     );
-    if (saved != true || !mounted) {
-      templateController.dispose();
-      deviceController.dispose();
-      return;
-    }
-    final template = templateController.text.trim();
-    final deviceLabel = deviceController.text.trim();
-    templateController.dispose();
-    deviceController.dispose();
-    if (template.isEmpty || deviceLabel.isEmpty) {
-      _show('Both fields need some text.');
-      return;
-    }
+    if (settings == null || !mounted) return;
     try {
       await _channel.invokeMethod<void>('setSpeechSettings', {
-        'template': template,
-        'deviceLabel': deviceLabel,
+        'template': settings.template,
+        'deviceLabel': settings.deviceLabel,
       });
       await _refresh(quiet: true);
       _show('Announcement updated.');
@@ -305,6 +292,15 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
                   onNotificationsChanged: _setStatusNotifications,
                   onOpenNotificationSettings: _openNotificationSettings,
                 ),
+                if (platform == 'Android') ...[
+                  const SizedBox(height: 18),
+                  _BackgroundReliabilityCard(
+                    unrestricted: _batteryOptimizationIgnored,
+                    isSamsung: _isSamsung,
+                    onRequestUnrestricted: _requestUnrestrictedBattery,
+                    onOpenSamsungSettings: _openSamsungBackgroundSettings,
+                  ),
+                ],
                 const SizedBox(height: 18),
                 Text('Speakers', style: Theme.of(context).textTheme.titleLarge),
                 const SizedBox(height: 10),
@@ -366,6 +362,111 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
                 ),
               ],
             ),
+    );
+  }
+}
+
+class _AnnouncementSettings {
+  const _AnnouncementSettings({
+    required this.template,
+    required this.deviceLabel,
+  });
+
+  final String template;
+  final String deviceLabel;
+}
+
+class _AnnouncementEditorDialog extends StatefulWidget {
+  const _AnnouncementEditorDialog({
+    required this.initialTemplate,
+    required this.initialDeviceLabel,
+  });
+
+  final String initialTemplate;
+  final String initialDeviceLabel;
+
+  @override
+  State<_AnnouncementEditorDialog> createState() =>
+      _AnnouncementEditorDialogState();
+}
+
+class _AnnouncementEditorDialogState extends State<_AnnouncementEditorDialog> {
+  late final TextEditingController _templateController;
+  late final TextEditingController _deviceController;
+  String? _validationError;
+
+  @override
+  void initState() {
+    super.initState();
+    _templateController = TextEditingController(text: widget.initialTemplate);
+    _deviceController = TextEditingController(text: widget.initialDeviceLabel);
+  }
+
+  @override
+  void dispose() {
+    _templateController.dispose();
+    _deviceController.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final template = _templateController.text.trim();
+    final deviceLabel = _deviceController.text.trim();
+    if (template.isEmpty || deviceLabel.isEmpty) {
+      setState(() => _validationError = 'Both fields need some text.');
+      return;
+    }
+    Navigator.of(
+      context,
+    ).pop(_AnnouncementSettings(template: template, deviceLabel: deviceLabel));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Customize announcement'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _deviceController,
+              maxLength: 80,
+              decoration: const InputDecoration(
+                labelText: 'This device name',
+                hintText: "Ron's phone",
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _templateController,
+              maxLength: 240,
+              minLines: 2,
+              maxLines: 5,
+              decoration: const InputDecoration(
+                labelText: 'What it should say',
+                helperText: 'Use {speaker}, {battery}, and {device}',
+                alignLabelWithHint: true,
+              ),
+            ),
+            if (_validationError != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                _validationError!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(onPressed: _save, child: const Text('Save')),
+      ],
     );
   }
 }
@@ -502,6 +603,84 @@ class _AnnouncementCard extends StatelessWidget {
                 onPressed: onOpenNotificationSettings,
                 child: const Text('Open Android notification settings'),
               ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _BackgroundReliabilityCard extends StatelessWidget {
+  const _BackgroundReliabilityCard({
+    required this.unrestricted,
+    required this.isSamsung,
+    required this.onRequestUnrestricted,
+    required this.onOpenSamsungSettings,
+  });
+
+  final bool unrestricted;
+  final bool isSamsung;
+  final VoidCallback onRequestUnrestricted;
+  final VoidCallback onOpenSamsungSettings;
+
+  @override
+  Widget build(BuildContext context) {
+    final statusColor = unrestricted
+        ? const Color(0xFF16865C)
+        : Theme.of(context).colorScheme.error;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Background reliability',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Icon(
+                  unrestricted ? Icons.check_circle : Icons.warning_amber,
+                  color: statusColor,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    unrestricted
+                        ? 'Android battery mode: Unrestricted'
+                        : 'Android battery mode needs Unrestricted access',
+                    style: TextStyle(
+                      color: statusColor,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (!unrestricted) ...[
+              const SizedBox(height: 10),
+              FilledButton.icon(
+                onPressed: onRequestUnrestricted,
+                icon: const Icon(Icons.battery_saver),
+                label: const Text('Allow unrestricted battery'),
+              ),
+            ],
+            if (isSamsung) ...[
+              const SizedBox(height: 14),
+              const Text(
+                'Samsung requires confirmation in Background usage limits. '
+                'Open Never sleeping apps, tap +, and add Bose Battery Voice.',
+                style: TextStyle(color: Color(0xFF627D98)),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: onOpenSamsungSettings,
+                icon: const Icon(Icons.open_in_new),
+                label: const Text('Open Samsung sleeping settings'),
+              ),
+            ],
           ],
         ),
       ),
