@@ -1,0 +1,12 @@
+[Unit]
+Description=Announce Elizabeth's Bose battery after it becomes the active audio output
+After=bluetooth.target pipewire-pulse.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /var/www/LiamApp01/bose-battery-voice/ubuntu/bose_battery_voice.py monitor --speaker elizabeth
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

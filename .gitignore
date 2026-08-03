@@ -1,0 +1,40 @@
+# Operating-system and editor state
+.DS_Store
+.idea/
+*.iml
+*.swp
+
+# Native build output
+/hello_ron
+*.o
+*.so
+*.dylib
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Flutter and Dart generated output
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/build/
+**/coverage/
+
+# Android machine state and signing material
+**/.gradle/
+**/.kotlin/
+**/local.properties
+**/key.properties
+**/*.keystore
+**/*.jks
+
+# Xcode, CocoaPods, and Flutter iOS generated output
+**/DerivedData/
+**/Pods/
+**/.symlinks/
+**/xcuserdata/
+**/ios/Flutter/ephemeral/
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/flutter_export_environment.sh

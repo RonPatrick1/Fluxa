@@ -1,0 +1,24 @@
+<!--
+  RESEARCH CANDIDATE ONLY - DO NOT FLASH WITHOUT A RECOVERY PLAN.
+
+  This maps only the SoundLink Max (PID 0x094F, codename Edelman) to Bose's
+  unmodified, signed 4.12.18 image. The advertised 9.x revision is intentional:
+  it is the manifest-side version used to make an older image appear selectable.
+-->
+<INDEX REVISION="01.00.00">
+  <DEVICE ID="0x094F" PRODUCTNAME="Bose SoundLink Max" USE_CLOUD="0">
+    <HARDWARE REVISION="01.00.00">
+      <RELEASE HTTPHOST="downloads-dev.bose.com"
+               LANGUAGES="en-us"
+               REVISION="9.12.18+g912e75d"
+               URLPATH="/ced/edelman/">
+        <IMAGE CRC="0xE7EEED5E"
+               FILENAME="edelman_encrypted_prod_4.12.18.bin"
+               LENGTH="5681752"
+               NOFORCE="1"
+               REVISION="9.12.18+g912e75d"
+               SUBID="0" />
+      </RELEASE>
+    </HARDWARE>
+  </DEVICE>
+</INDEX>
