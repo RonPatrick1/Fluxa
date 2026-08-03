@@ -131,8 +131,8 @@ output, including when the output is selected after Bluetooth connects.
 Useful commands:
 
 ```sh
-python3 ubuntu/bose_battery_voice.py status
-python3 ubuntu/bose_battery_voice.py settings
+bose-battery-voice status
+bose-battery-voice settings
 systemctl --user status bose-battery-voice.service
 journalctl --user -u bose-battery-voice.service
 ```
@@ -142,7 +142,7 @@ Ubuntu settings are stored in
 them without reinstalling the service:
 
 ```sh
-python3 ubuntu/bose_battery_voice.py settings \
+bose-battery-voice settings \
   --device-label "Alien3 Ubuntu" \
   --volume 45 \
   --template "{devices} connected to {speaker}. Battery {battery} percent."
@@ -156,7 +156,7 @@ The following command is intentionally audible and only succeeds while
 Elizabeth's Bose is connected and active:
 
 ```sh
-python3 ubuntu/bose_battery_voice.py once elizabeth
+bose-battery-voice once elizabeth
 ```
 
 Remove the service with `./ubuntu/uninstall.sh`.
