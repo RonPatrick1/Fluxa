@@ -16,6 +16,10 @@ class BootReceiver : BroadcastReceiver() {
 
         val service = Intent(context, BoseMonitoringService::class.java)
             .setAction(BoseMonitoringService.ACTION_START)
+            .putExtra(
+                BoseMonitoringService.EXTRA_SKIP_ALREADY_CONNECTED,
+                intent.action == Intent.ACTION_MY_PACKAGE_REPLACED,
+            )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(service)
         } else {

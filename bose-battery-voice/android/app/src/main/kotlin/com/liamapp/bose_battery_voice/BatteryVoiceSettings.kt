@@ -2,6 +2,7 @@ package com.liamapp.bose_battery_voice
 
 import android.content.Context
 import android.content.SharedPreferences
+import java.util.Locale
 
 data class FamilySpeaker(
     val id: String,
@@ -18,11 +19,14 @@ object BatteryVoiceSettings {
     const val KEY_SHOW_STATUS_NOTIFICATIONS = "show_status_notifications"
     const val KEY_SPEECH_TEMPLATE = "speech_template"
     const val KEY_DEVICE_LABEL = "device_label"
+    const val KEY_ANNOUNCEMENT_VOLUME_PERCENT = "announcement_volume_percent"
+    const val KEY_SUPPRESS_UNTIL_DISCONNECT = "suppress_until_disconnect"
     const val KEY_LAST_EVENT = "last_event"
     const val KEY_LAST_ANNOUNCEMENT_PREFIX = "last_announcement_"
     const val LEGACY_SPEECH_TEMPLATE = "Battery {battery} percent."
     const val DEFAULT_SPEECH_TEMPLATE =
         "{devices} connected to {speaker}. Battery {battery} percent."
+    const val DEFAULT_ANNOUNCEMENT_VOLUME_PERCENT = 45
 
     val ELIZABETH = FamilySpeaker(
         id = "elizabeth",
@@ -71,6 +75,21 @@ object BatteryVoiceSettings {
                 "Android phone"
             }
 
+    fun announcementVolumePercent(context: Context): Int =
+        preferences(context).getInt(
+            KEY_ANNOUNCEMENT_VOLUME_PERCENT,
+            DEFAULT_ANNOUNCEMENT_VOLUME_PERCENT,
+        ).coerceIn(20, 75)
+
+    fun announcementVolumeIndex(
+        currentVolume: Int,
+        maximumVolume: Int,
+        targetPercent: Int,
+    ): Int = maxOf(
+        currentVolume,
+        maxOf(1, (maximumVolume * targetPercent.coerceIn(20, 75) + 99) / 100),
+    )
+
     fun connectedDevicesPhrase(
         localDeviceLabel: String,
         sources: List<BoseConnectedSource>,
@@ -86,6 +105,15 @@ object BatteryVoiceSettings {
             else -> names.dropLast(1).joinToString(", ") + ", and " + names.last()
         }
     }
+
+    fun shouldAnnounceAutomatically(sources: List<BoseConnectedSource>): Boolean {
+        if (sources.size < 2) return true
+        val current = sources.firstOrNull { it.isCurrentDevice } ?: return true
+        return current == automaticAnnouncer(sources)
+    }
+
+    fun automaticAnnouncer(sources: List<BoseConnectedSource>): BoseConnectedSource? =
+        sources.maxByOrNull { it.name.lowercase(Locale.ROOT) }
 
     fun renderSpeech(
         context: Context,

@@ -42,6 +42,7 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
         const val ACTION_ANNOUNCE = "com.liamapp.bose_battery_voice.ANNOUNCE"
         const val ACTION_TEST_ACTIVE = "com.liamapp.bose_battery_voice.TEST_ACTIVE"
         const val EXTRA_SPEAKER_ID = "speaker_id"
+        const val EXTRA_SKIP_ALREADY_CONNECTED = "skip_already_connected"
         private const val CHANNEL_ID = "battery_voice_monitor"
         private const val NOTIFICATION_ID = 1042
         private const val ANNOUNCEMENT_COOLDOWN_MS = 60_000L
@@ -52,6 +53,8 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
         val level: Int,
         val connectedDevices: String,
         val previousVolume: Int,
+        val appliedVolume: Int,
+        val maximumVolume: Int,
         val focusRequest: Any?,
     )
 
@@ -66,6 +69,8 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
     private var textToSpeech: TextToSpeech? = null
     private var ttsReady = false
     private val pendingSpeech = mutableMapOf<String, PendingSpeech>()
+    private val announcementsInFlight = mutableSetOf<String>()
+    private val forcedAnnouncements = mutableSetOf<String>()
     private val focusListener = AudioManager.OnAudioFocusChangeListener { }
 
     private val receiver = object : BroadcastReceiver() {
@@ -78,9 +83,24 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
                 BluetoothDevice.ACTION_ACL_CONNECTED -> true
                 else -> false
             }
+            val disconnected = when (intent.action) {
+                BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED ->
+                    intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1) ==
+                        BluetoothProfile.STATE_DISCONNECTED
+                BluetoothDevice.ACTION_ACL_DISCONNECTED -> true
+                else -> false
+            }
+            if (disconnected) {
+                setConnectionSuppressed(false)
+                return
+            }
             if (connected && BatteryVoiceSettings.isEnabled(this@BoseMonitoringService, speaker)) {
+                if (isConnectionSuppressed()) {
+                    record("${speaker.name}: update silence remains active until disconnect")
+                    return
+                }
                 record("${speaker.name} connected; waiting for its audio route")
-                scheduleAnnouncement(speaker, force = false, attempt = 0)
+                requestAnnouncement(speaker, force = false)
             }
         }
     }
@@ -91,13 +111,31 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
         startForeground(NOTIFICATION_ID, notification("Waiting for a selected Bose speaker"))
         textToSpeech = TextToSpeech(this, this)
         registerBluetoothReceiver()
-        handler.postDelayed({ announceAlreadyConnectedSpeaker() }, 2_500)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_ANNOUNCE) {
+        if (intent?.action == ACTION_START) {
+            if (intent.getBooleanExtra(EXTRA_SKIP_ALREADY_CONNECTED, false)) {
+                val connectedNow = BatteryVoiceSettings.speakers.any { isActiveAudioRoute(it) }
+                setConnectionSuppressed(connectedNow)
+                record(
+                    if (connectedNow) {
+                        "Updated quietly; announcements paused until the Bose disconnects"
+                    } else {
+                        "Updated quietly; monitoring future Bose connections"
+                    },
+                )
+            } else {
+                if (isConnectionSuppressed() &&
+                    BatteryVoiceSettings.speakers.none { isActiveAudioRoute(it) }
+                ) {
+                    setConnectionSuppressed(false)
+                }
+                handler.postDelayed({ announceAlreadyConnectedSpeaker() }, 2_500)
+            }
+        } else if (intent?.action == ACTION_ANNOUNCE) {
             val speaker = BatteryVoiceSettings.speaker(intent.getStringExtra(EXTRA_SPEAKER_ID))
-            if (speaker != null) scheduleAnnouncement(speaker, force = true, attempt = 0)
+            if (speaker != null) requestAnnouncement(speaker, force = true)
         } else if (intent?.action == ACTION_TEST_ACTIVE) {
             val speaker = BatteryVoiceSettings.speakers.firstOrNull { isActiveAudioRoute(it) }
             if (speaker == null) {
@@ -105,7 +143,7 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
                 stopIfEphemeral()
             } else {
                 record("Testing the custom announcement on ${speaker.name}")
-                scheduleAnnouncement(speaker, force = true, attempt = 0)
+                requestAnnouncement(speaker, force = true)
             }
         }
         return START_STICKY
@@ -174,11 +212,33 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
     @SuppressLint("MissingPermission")
     private fun announceAlreadyConnectedSpeaker() {
         if (!hasBluetoothPermission()) return
+        if (isConnectionSuppressed()) return
         val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter ?: return
         BatteryVoiceSettings.speakers
             .filter { BatteryVoiceSettings.isEnabled(this, it) }
             .filter { isActiveAudioRoute(it) }
-            .forEach { scheduleAnnouncement(it, force = false, attempt = 0) }
+            .forEach { requestAnnouncement(it, force = false) }
+    }
+
+    private fun requestAnnouncement(speaker: FamilySpeaker, force: Boolean) {
+        if (force) forcedAnnouncements.add(speaker.id)
+        if (!announcementsInFlight.add(speaker.id)) {
+            Log.i(
+                TAG,
+                if (force) {
+                    "${speaker.name}: upgraded the pending request to a manual test"
+                } else {
+                    "${speaker.name}: ignored a duplicate announcement request"
+                },
+            )
+            return
+        }
+        scheduleAnnouncement(speaker, force = force, attempt = 0)
+    }
+
+    private fun completeAnnouncementRequest(speaker: FamilySpeaker) {
+        announcementsInFlight.remove(speaker.id)
+        forcedAnnouncements.remove(speaker.id)
     }
 
     private fun scheduleAnnouncement(speaker: FamilySpeaker, force: Boolean, attempt: Int) {
@@ -190,16 +250,19 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
 
     @SuppressLint("MissingPermission")
     private fun announceIfRouted(speaker: FamilySpeaker, force: Boolean, attempt: Int) {
+        val effectiveForce = force || forcedAnnouncements.contains(speaker.id)
         if (!hasBluetoothPermission()) {
             record("Bluetooth permission is missing")
+            completeAnnouncementRequest(speaker)
             stopIfEphemeral()
             return
         }
         if (!isActiveAudioRoute(speaker)) {
             if (attempt < 8) {
-                scheduleAnnouncement(speaker, force, attempt + 1)
+                scheduleAnnouncement(speaker, effectiveForce, attempt + 1)
             } else {
                 record("${speaker.name} connected, but it was not the active audio output")
+                completeAnnouncementRequest(speaker)
                 stopIfEphemeral()
             }
             return
@@ -210,10 +273,16 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
             BatteryVoiceSettings.KEY_LAST_ANNOUNCEMENT_PREFIX + speaker.id,
             0L,
         )
-        if (!force && System.currentTimeMillis() - last < ANNOUNCEMENT_COOLDOWN_MS) return
+        if (!effectiveForce && System.currentTimeMillis() - last < ANNOUNCEMENT_COOLDOWN_MS) {
+            completeAnnouncementRequest(speaker)
+            return
+        }
 
         val adapter: BluetoothAdapter =
-            (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter ?: return
+            (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter ?: run {
+                completeAnnouncementRequest(speaker)
+                return
+            }
         val device = adapter.getRemoteDevice(speaker.address)
         updateNotification("Reading ${speaker.name} battery")
         executor.execute {
@@ -224,11 +293,15 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
                         speaker,
                         snapshot.level.coerceIn(0, 100),
                         snapshot.connectedSources,
+                        effectiveForce,
                     )
                 }
             } catch (error: Exception) {
-                record("Could not read ${speaker.name}: ${error.message ?: "Bluetooth error"}")
-                stopIfEphemeral()
+                handler.post {
+                    record("Could not read ${speaker.name}: ${error.message ?: "Bluetooth error"}")
+                    completeAnnouncementRequest(speaker)
+                    stopIfEphemeral()
+                }
             }
         }
     }
@@ -237,14 +310,25 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
         speaker: FamilySpeaker,
         level: Int,
         connectedSources: List<BoseConnectedSource>,
+        force: Boolean,
     ) {
+        if (!force && !BatteryVoiceSettings.shouldAnnounceAutomatically(connectedSources)) {
+            val announcer = BatteryVoiceSettings.automaticAnnouncer(connectedSources)?.name
+                ?: "the other connected device"
+            record("$announcer will announce both connected devices")
+            completeAnnouncementRequest(speaker)
+            stopIfEphemeral()
+            return
+        }
         if (!ttsReady) {
             record("Battery $level%, but Android text-to-speech is not ready")
+            completeAnnouncementRequest(speaker)
             stopIfEphemeral()
             return
         }
         if (!isActiveAudioRoute(speaker)) {
             record("Battery $level%, but ${speaker.name} stopped being the audio output")
+            completeAnnouncementRequest(speaker)
             stopIfEphemeral()
             return
         }
@@ -252,15 +336,27 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
         val focus = requestSpeechFocus(audioManager)
         if (!focus.granted) {
             record("Battery $level%, but Android denied temporary audio focus")
+            completeAnnouncementRequest(speaker)
+            stopIfEphemeral()
             return
         }
 
         val previousVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
         val maximumVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        val announcementVolume = maxOf(previousVolume, maxOf(1, maximumVolume / 3))
+        val volumePercent = BatteryVoiceSettings.announcementVolumePercent(this)
+        val announcementVolume = BatteryVoiceSettings.announcementVolumeIndex(
+            previousVolume,
+            maximumVolume,
+            volumePercent,
+        )
         if (announcementVolume != previousVolume) {
-            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, announcementVolume, 0)
+            audioManager.setStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                announcementVolume,
+                AudioManager.FLAG_REMOVE_SOUND_AND_VIBRATE,
+            )
         }
+        val appliedVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
 
         val utteranceId = "bose-${speaker.id}-${System.currentTimeMillis()}"
         val connectedDevices = BatteryVoiceSettings.connectedDevicesPhrase(
@@ -272,9 +368,14 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
             level = level,
             connectedDevices = connectedDevices,
             previousVolume = previousVolume,
+            appliedVolume = appliedVolume,
+            maximumVolume = maximumVolume,
             focusRequest = focus.request,
         )
-        record("${speaker.name}: found $connectedDevices; preparing to speak $level%")
+        record(
+            "${speaker.name}: found $connectedDevices; volume $appliedVolume/$maximumVolume; " +
+                "preparing to speak $level%",
+        )
         handler.postDelayed(
             {
                 if (!isActiveAudioRoute(speaker)) {
@@ -300,15 +401,22 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
                     finishSpeech(utteranceId, success = false, detail = "speech was rejected")
                 }
             },
-            300L,
+            500L,
         )
     }
 
     private fun finishSpeech(utteranceId: String, success: Boolean, detail: String? = null) {
         val pending = pendingSpeech.remove(utteranceId) ?: return
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, pending.previousVolume, 0)
+        if (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) == pending.appliedVolume) {
+            audioManager.setStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                pending.previousVolume,
+                AudioManager.FLAG_REMOVE_SOUND_AND_VIBRATE,
+            )
+        }
         abandonSpeechFocus(audioManager, pending.focusRequest)
+        completeAnnouncementRequest(pending.speaker)
         if (success) {
             BatteryVoiceSettings.preferences(this).edit()
                 .putLong(
@@ -318,7 +426,8 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
                 .apply()
             record(
                 "${pending.speaker.name}: announced ${pending.level}% for " +
-                    "${pending.connectedDevices} at ${timestamp()}",
+                    "${pending.connectedDevices} at volume ${pending.appliedVolume}/" +
+                    "${pending.maximumVolume} at ${timestamp()}",
             )
         } else {
             record("Could not speak ${pending.level}%${detail?.let { ": $it" }.orEmpty()}")
@@ -434,6 +543,7 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
     private fun registerBluetoothReceiver() {
         val filter = IntentFilter().apply {
             addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+            addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
             addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -443,6 +553,18 @@ class BoseMonitoringService : Service(), TextToSpeech.OnInitListener {
             registerReceiver(receiver, filter)
         }
         receiverRegistered = true
+    }
+
+    private fun isConnectionSuppressed(): Boolean =
+        BatteryVoiceSettings.preferences(this).getBoolean(
+            BatteryVoiceSettings.KEY_SUPPRESS_UNTIL_DISCONNECT,
+            false,
+        )
+
+    private fun setConnectionSuppressed(suppressed: Boolean) {
+        BatteryVoiceSettings.preferences(this).edit()
+            .putBoolean(BatteryVoiceSettings.KEY_SUPPRESS_UNTIL_DISCONNECT, suppressed)
+            .apply()
     }
 
     private fun record(message: String) {

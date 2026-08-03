@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import importlib.util
+import os
+import re
 import subprocess
 import sys
 import time
@@ -26,10 +29,62 @@ SPEAKERS = {speaker.id: speaker for speaker in (ELIZABETH, FREDDIE)}
 
 POLL_SECONDS = 2.0
 ANNOUNCEMENT_COOLDOWN_SECONDS = 60.0
-LOCAL_DEVICE_LABEL = "Ubuntu desktop"
+DEFAULT_SPEECH_TEMPLATE = (
+    "{devices} connected to {speaker}. Battery {battery} percent."
+)
+
+
+@dataclass(frozen=True)
+class DesktopSettings:
+    device_label: str = "Ubuntu desktop"
+    speech_template: str = DEFAULT_SPEECH_TEMPLATE
+    announcement_volume_percent: int = 45
+
+
+def config_path() -> Path:
+    config_root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return config_root / "bose-battery-voice" / "settings.ini"
+
+
+def load_settings(path: Path | None = None) -> DesktopSettings:
+    target = path or config_path()
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(target)
+    section = parser["announcement"] if parser.has_section("announcement") else {}
+    try:
+        volume = int(section.get("volume_percent", "45"))
+    except ValueError:
+        volume = 45
+    return DesktopSettings(
+        device_label=section.get("device_label", "Ubuntu desktop").strip()
+        or "Ubuntu desktop",
+        speech_template=section.get(
+            "speech_template", DEFAULT_SPEECH_TEMPLATE
+        ).strip()
+        or DEFAULT_SPEECH_TEMPLATE,
+        announcement_volume_percent=max(1, min(volume, 100)),
+    )
+
+
+def save_settings(settings: DesktopSettings, path: Path | None = None) -> Path:
+    target = path or config_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    parser = configparser.ConfigParser(interpolation=None)
+    parser["announcement"] = {
+        "device_label": settings.device_label,
+        "speech_template": settings.speech_template,
+        "volume_percent": str(settings.announcement_volume_percent),
+    }
+    with target.open("w", encoding="utf-8") as stream:
+        parser.write(stream)
+    return target
 
 
 class DesktopBatteryError(RuntimeError):
+    pass
+
+
+class DesktopAnnouncementSkipped(DesktopBatteryError):
     pass
 
 
@@ -108,14 +163,33 @@ def read_snapshot(speaker: Speaker) -> tuple[int, tuple[object, ...]]:
         raise DesktopBatteryError(str(error)) from error
 
 
-def connected_devices_phrase(sources: Sequence[object]) -> str:
+def automatic_announcer(sources: Sequence[object]) -> object | None:
+    return max(sources, key=lambda source: source.name.casefold(), default=None)
+
+
+def should_announce_automatically(sources: Sequence[object]) -> bool:
+    if len(sources) < 2:
+        return True
+    current = next(
+        (source for source in sources if source.is_current_device),
+        None,
+    )
+    elected = automatic_announcer(sources)
+    return current is None or elected is None or current.name.casefold() == elected.name.casefold()
+
+
+def connected_devices_phrase(
+    sources: Sequence[object],
+    settings: DesktopSettings | None = None,
+) -> str:
+    current_settings = settings or load_settings()
     names: list[str] = []
     for source in sources:
-        name = LOCAL_DEVICE_LABEL if source.is_current_device else source.name
+        name = current_settings.device_label if source.is_current_device else source.name
         if name and name.casefold() not in {item.casefold() for item in names}:
             names.append(name)
     if not names:
-        return LOCAL_DEVICE_LABEL
+        return current_settings.device_label
     if len(names) == 1:
         return names[0]
     if len(names) == 2:
@@ -127,22 +201,56 @@ def speak(
     level: int,
     sources: Sequence[object] = (),
     runner: Callable[..., str] = run_text,
+    settings: DesktopSettings | None = None,
+    speaker: Speaker = ELIZABETH,
 ) -> None:
-    devices = connected_devices_phrase(sources)
-    runner(
-        [
-            "spd-say",
-            "--wait",
-            f"{devices} connected to Elizabeth's Bose. Battery {level} percent.",
-        ],
-        timeout=20.0,
+    current_settings = settings or load_settings()
+    devices = connected_devices_phrase(sources, current_settings)
+    sentence = (
+        current_settings.speech_template
+        .replace("{devices}", devices)
+        .replace("{device}", current_settings.device_label)
+        .replace("{speaker}", speaker.name)
+        .replace("{battery}", str(max(0, min(level, 100))))
     )
+    previous_volume: int | None = None
+    target_volume = current_settings.announcement_volume_percent
+    try:
+        volume_text = runner(
+            ["pactl", "get-sink-volume", "@DEFAULT_SINK@"]
+        )
+        match = re.search(r"/\s*(\d+)%", volume_text)
+        if match:
+            previous_volume = int(match.group(1))
+            if previous_volume < target_volume:
+                runner([
+                    "pactl",
+                    "set-sink-volume",
+                    "@DEFAULT_SINK@",
+                    f"{target_volume}%",
+                ])
+    except (DesktopBatteryError, subprocess.SubprocessError):
+        previous_volume = None
+    try:
+        runner(["spd-say", "--wait", sentence], timeout=20.0)
+    finally:
+        if previous_volume is not None and previous_volume < target_volume:
+            try:
+                runner([
+                    "pactl",
+                    "set-sink-volume",
+                    "@DEFAULT_SINK@",
+                    f"{previous_volume}%",
+                ])
+            except (DesktopBatteryError, subprocess.SubprocessError):
+                pass
 
 
 def announce_if_active(
     speaker: Speaker,
     *,
     force: bool = False,
+    coordinate_helpers: bool = False,
     runner: Callable[..., str] = run_text,
 ) -> int:
     if not bluetooth_connected(speaker, runner):
@@ -150,11 +258,15 @@ def announce_if_active(
     if not active_audio_route(speaker, runner):
         raise DesktopBatteryError(f"{speaker.name} is not the current audio output")
     level, sources = read_snapshot(speaker)
+    if not force and coordinate_helpers and not should_announce_automatically(sources):
+        elected = automatic_announcer(sources)
+        name = elected.name if elected is not None else "the other connected device"
+        raise DesktopAnnouncementSkipped(f"{name} will announce both connected devices")
     if not active_audio_route(speaker, runner):
         raise DesktopBatteryError(f"{speaker.name} stopped being the audio output")
     if not force and not bluetooth_connected(speaker, runner):
         raise DesktopBatteryError(f"{speaker.name} disconnected before the announcement")
-    speak(level, sources, runner)
+    speak(level, sources, runner, speaker=speaker)
     return level
 
 
@@ -172,6 +284,7 @@ def monitor(speakers: Sequence[Speaker]) -> int:
     )
     while True:
         for speaker in speakers:
+            was_connected = connected[speaker.id]
             is_connected = bluetooth_connected(speaker)
             is_active = is_connected and active_audio_route(speaker)
             became_active = is_active and not active[speaker.id]
@@ -182,7 +295,10 @@ def monitor(speakers: Sequence[Speaker]) -> int:
             if time.monotonic() - last_announced[speaker.id] < ANNOUNCEMENT_COOLDOWN_SECONDS:
                 continue
             try:
-                level = announce_if_active(speaker)
+                level = announce_if_active(
+                    speaker,
+                    coordinate_helpers=not was_connected,
+                )
                 last_announced[speaker.id] = time.monotonic()
                 print(f"{speaker.name}: announced {level}%", flush=True)
             except DesktopBatteryError as error:
@@ -209,6 +325,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_parser = subparsers.add_parser("status", help="show connection and route state")
     status_parser.add_argument("speaker", choices=tuple(SPEAKERS), nargs="?")
+
+    settings_parser = subparsers.add_parser(
+        "settings",
+        help="show or change the Ubuntu announcement settings",
+    )
+    settings_parser.add_argument("--device-label")
+    settings_parser.add_argument("--template")
+    settings_parser.add_argument("--volume", type=int, choices=range(1, 101), metavar="1-100")
     return parser
 
 
@@ -221,6 +345,20 @@ def selected_speakers(value: str) -> tuple[Speaker, ...]:
 def main() -> int:
     args = build_parser().parse_args()
     try:
+        if args.command == "settings":
+            current = load_settings()
+            updated = DesktopSettings(
+                device_label=args.device_label or current.device_label,
+                speech_template=args.template or current.speech_template,
+                announcement_volume_percent=args.volume or current.announcement_volume_percent,
+            )
+            if any((args.device_label, args.template, args.volume)):
+                save_settings(updated)
+            print(f"Settings file: {config_path()}")
+            print(f"Device label: {updated.device_label}")
+            print(f"Template: {updated.speech_template}")
+            print(f"Announcement volume: {updated.announcement_volume_percent}%")
+            return 0
         if args.command == "monitor":
             return monitor(selected_speakers(args.speaker))
         if args.command == "once":

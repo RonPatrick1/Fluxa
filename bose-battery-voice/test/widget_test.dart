@@ -32,6 +32,11 @@ void main() {
     await tester.pumpWidget(const BatteryVoiceApp());
     await tester.pumpAndSettle();
 
+    await tester.scrollUntilVisible(
+      find.text("Elizabeth's Bose"),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text("Elizabeth's Bose"), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text("Freddie's Bose"),

@@ -59,6 +59,7 @@ private final class BoseBatteryCoordinator: NSObject {
   private var pendingSourceAddresses: [UUID: [Data]] = [:]
   private var pendingConnectedSources: [UUID: [BoseConnectedSource]] = [:]
   private var forceRequests = Set<String>()
+  private var announcementsInFlight = Set<String>()
   private var utteranceSpeakerIDs: [ObjectIdentifier: String] = [:]
   private let synthesizer = AVSpeechSynthesizer()
 
@@ -145,9 +146,7 @@ private final class BoseBatteryCoordinator: NSObject {
         result(invalidArguments())
         return
       }
-      forceRequests.insert(id)
-      startScanning()
-      record("Looking for \(speaker(id: id)!.name)")
+      beginAnnouncement(for: speaker(id: id)!, forced: true)
       result(nil)
     case "testAnnouncement":
       guard let activeSpeaker = speakers.first(where: { activeAudioRouteMatches($0) }) else {
@@ -158,9 +157,7 @@ private final class BoseBatteryCoordinator: NSObject {
         ))
         return
       }
-      forceRequests.insert(activeSpeaker.id)
-      startScanning()
-      record("Testing the custom announcement on \(activeSpeaker.name)")
+      beginAnnouncement(for: activeSpeaker, forced: true)
       result(nil)
     default:
       result(FlutterMethodNotImplemented)
@@ -219,6 +216,17 @@ private final class BoseBatteryCoordinator: NSObject {
     }
   }
 
+  private func automaticAnnouncer(_ sources: [BoseConnectedSource]) -> BoseConnectedSource? {
+    sources.max { $0.name.lowercased() < $1.name.lowercased() }
+  }
+
+  private func shouldAnnounceAutomatically(_ sources: [BoseConnectedSource]) -> Bool {
+    guard sources.count >= 2,
+          let current = sources.first(where: { $0.isCurrentDevice }),
+          let selected = automaticAnnouncer(sources) else { return true }
+    return current.name.caseInsensitiveCompare(selected.name) == .orderedSame
+  }
+
   private func renderedSpeech(
     for speaker: FamilySpeaker,
     level: Int,
@@ -245,6 +253,36 @@ private final class BoseBatteryCoordinator: NSObject {
   private func shouldUse(_ speaker: FamilySpeaker) -> Bool {
     (defaults.bool(forKey: Self.monitoringKey) && isEnabled(speaker))
       || forceRequests.contains(speaker.id)
+  }
+
+  private func beginAnnouncement(for speaker: FamilySpeaker, forced: Bool) {
+    guard !announcementsInFlight.contains(speaker.id) else {
+      let alreadySpeaking = utteranceSpeakerIDs.values.contains(speaker.id)
+      if forced && !alreadySpeaking {
+        forceRequests.insert(speaker.id)
+        record("The pending \(speaker.name) announcement is now a manual test")
+      } else {
+        record("\(speaker.name) already has an announcement in progress")
+      }
+      return
+    }
+    if forced { forceRequests.insert(speaker.id) }
+    announcementsInFlight.insert(speaker.id)
+    record(forced ? "Testing the custom announcement on \(speaker.name)" :
+      "Looking for \(speaker.name)")
+    if let existing = peripherals.first(where: {
+      speakerIDsByPeripheral[$0.key] == speaker.id && $0.value.state == .connected
+    })?.value {
+      existing.delegate = self
+      receiveBuffers[existing.identifier] = Data()
+      existing.discoverServices([Self.boseService])
+    } else {
+      startScanning()
+    }
+  }
+
+  private func completeAnnouncement(for speaker: FamilySpeaker) {
+    announcementsInFlight.remove(speaker.id)
   }
 
   private func startScanning() {
@@ -438,12 +476,23 @@ private final class BoseBatteryCoordinator: NSObject {
     let forced = forceRequests.remove(speaker.id) != nil
     guard activeAudioRouteMatches(speaker) else {
       record("\(speaker.name) was found, but it is not the active audio output")
+      completeAnnouncement(for: speaker)
       finishEphemeral(peripheral)
       return
     }
     let lastKey = "last_announcement_\(speaker.id)"
     let last = defaults.double(forKey: lastKey)
-    guard forced || Date().timeIntervalSince1970 - last >= Self.cooldown else { return }
+    guard forced || Date().timeIntervalSince1970 - last >= Self.cooldown else {
+      completeAnnouncement(for: speaker)
+      return
+    }
+    if !forced && !shouldAnnounceAutomatically(connectedSources) {
+      let announcer = automaticAnnouncer(connectedSources)?.name ?? "the other connected device"
+      record("\(announcer) will announce both connected devices")
+      completeAnnouncement(for: speaker)
+      finishEphemeral(peripheral)
+      return
+    }
 
     do {
       let session = AVAudioSession.sharedInstance()
@@ -453,11 +502,13 @@ private final class BoseBatteryCoordinator: NSObject {
       try session.setActive(true)
     } catch {
       record("Battery \(level)%, but iOS could not start speech")
+      completeAnnouncement(for: speaker)
       finishEphemeral(peripheral)
       return
     }
     guard activeAudioRouteMatches(speaker) else {
       record("Battery \(level)%, but \(speaker.name) stopped being the audio output")
+      completeAnnouncement(for: speaker)
       finishEphemeral(peripheral)
       return
     }
@@ -472,6 +523,7 @@ private final class BoseBatteryCoordinator: NSObject {
     )
     utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
     utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+    utterance.volume = 1.0
     utteranceSpeakerIDs[ObjectIdentifier(utterance)] = speaker.id
     synthesizer.speak(utterance)
     defaults.set(Date().timeIntervalSince1970, forKey: lastKey)
@@ -491,6 +543,7 @@ private final class BoseBatteryCoordinator: NSObject {
     pendingConnectedSources.removeValue(forKey: peripheral.identifier)
     if let id = speakerIDsByPeripheral[peripheral.identifier] {
       forceRequests.remove(id)
+      if let speaker = speaker(id: id) { completeAnnouncement(for: speaker) }
     }
     record(message)
     finishEphemeral(peripheral)
@@ -531,12 +584,20 @@ extension BoseBatteryCoordinator: CBCentralManagerDelegate {
       peripheral: peripheral,
       advertisementData: advertisementData
     ), shouldUse(speaker) else { return }
+    if announcementsInFlight.contains(speaker.id),
+       speakerIDsByPeripheral[peripheral.identifier] == speaker.id {
+      return
+    }
+    announcementsInFlight.insert(speaker.id)
     defaults.set(peripheral.identifier.uuidString, forKey: "peripheral_\(speaker.id)")
     peripherals[peripheral.identifier] = peripheral
     speakerIDsByPeripheral[peripheral.identifier] = speaker.id
     peripheral.delegate = self
     if peripheral.state == .disconnected {
       central.connect(peripheral, options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true])
+    } else if peripheral.state == .connected {
+      receiveBuffers[peripheral.identifier] = Data()
+      peripheral.discoverServices([Self.boseService])
     }
   }
 
@@ -566,6 +627,7 @@ extension BoseBatteryCoordinator: CBCentralManagerDelegate {
     pendingConnectedSources.removeValue(forKey: peripheral.identifier)
     if let id = speakerIDsByPeripheral[peripheral.identifier],
        let speaker = speaker(id: id), shouldUse(speaker) {
+      completeAnnouncement(for: speaker)
       startScanning()
     }
   }
@@ -645,7 +707,18 @@ extension BoseBatteryCoordinator: CBPeripheralDelegate {
 
 extension BoseBatteryCoordinator: AVSpeechSynthesizerDelegate {
   func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-    utteranceSpeakerIDs.removeValue(forKey: ObjectIdentifier(utterance))
+    finishSpeech(utterance)
+  }
+
+  func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+    finishSpeech(utterance)
+  }
+
+  private func finishSpeech(_ utterance: AVSpeechUtterance) {
+    if let id = utteranceSpeakerIDs.removeValue(forKey: ObjectIdentifier(utterance)),
+       let speaker = speaker(id: id) {
+      completeAnnouncement(for: speaker)
+    }
     // AVSpeechSynthesizer has finished submitting samples before a Bluetooth
     // speaker necessarily finishes playing them. Leave the route active long
     // enough for its buffer to drain so the last word is not clipped.

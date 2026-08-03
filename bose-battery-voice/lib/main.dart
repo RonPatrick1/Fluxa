@@ -71,6 +71,8 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
   String get _deviceLabel =>
       _status['deviceLabel']?.toString() ??
       (Platform.isIOS ? 'iPhone' : 'Android phone');
+  int get _announcementVolumePercent =>
+      (_status['announcementVolumePercent'] as num?)?.round() ?? 45;
 
   String get _announcementPreview => _speechTemplate
       .replaceAll('{speaker}', "Elizabeth's Bose")
@@ -257,6 +259,8 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
       builder: (context) => _AnnouncementEditorDialog(
         initialTemplate: _speechTemplate,
         initialDeviceLabel: _deviceLabel,
+        initialVolumePercent: _announcementVolumePercent,
+        showVolume: _status['platform'] == 'Android',
       ),
     );
     if (settings == null || !mounted) return;
@@ -264,6 +268,7 @@ class _BatteryVoiceHomeState extends State<BatteryVoiceHome>
       await _channel.invokeMethod<void>('setSpeechSettings', {
         'template': settings.template,
         'deviceLabel': settings.deviceLabel,
+        'announcementVolumePercent': settings.volumePercent,
       });
       await _refresh(quiet: true);
       _show('Announcement updated.');
@@ -396,20 +401,26 @@ class _AnnouncementSettings {
   const _AnnouncementSettings({
     required this.template,
     required this.deviceLabel,
+    required this.volumePercent,
   });
 
   final String template;
   final String deviceLabel;
+  final int volumePercent;
 }
 
 class _AnnouncementEditorDialog extends StatefulWidget {
   const _AnnouncementEditorDialog({
     required this.initialTemplate,
     required this.initialDeviceLabel,
+    required this.initialVolumePercent,
+    required this.showVolume,
   });
 
   final String initialTemplate;
   final String initialDeviceLabel;
+  final int initialVolumePercent;
+  final bool showVolume;
 
   @override
   State<_AnnouncementEditorDialog> createState() =>
@@ -419,6 +430,7 @@ class _AnnouncementEditorDialog extends StatefulWidget {
 class _AnnouncementEditorDialogState extends State<_AnnouncementEditorDialog> {
   late final TextEditingController _templateController;
   late final TextEditingController _deviceController;
+  late double _volumePercent;
   String? _validationError;
 
   @override
@@ -426,6 +438,7 @@ class _AnnouncementEditorDialogState extends State<_AnnouncementEditorDialog> {
     super.initState();
     _templateController = TextEditingController(text: widget.initialTemplate);
     _deviceController = TextEditingController(text: widget.initialDeviceLabel);
+    _volumePercent = widget.initialVolumePercent.toDouble();
   }
 
   @override
@@ -444,7 +457,13 @@ class _AnnouncementEditorDialogState extends State<_AnnouncementEditorDialog> {
     }
     Navigator.of(
       context,
-    ).pop(_AnnouncementSettings(template: template, deviceLabel: deviceLabel));
+    ).pop(
+      _AnnouncementSettings(
+        template: template,
+        deviceLabel: deviceLabel,
+        volumePercent: _volumePercent.round(),
+      ),
+    );
   }
 
   @override
@@ -464,6 +483,24 @@ class _AnnouncementEditorDialogState extends State<_AnnouncementEditorDialog> {
                 hintText: "Ron's phone",
               ),
             ),
+            if (widget.showVolume) ...[
+              const SizedBox(height: 12),
+              Text(
+                'Minimum Android volume step: ${_volumePercent.round()}%',
+              ),
+              Slider(
+                min: 20,
+                max: 75,
+                divisions: 11,
+                value: _volumePercent,
+                label: '${_volumePercent.round()}%',
+                onChanged: (value) => setState(() => _volumePercent = value),
+              ),
+              const Text(
+                'Samsung Bluetooth volume is nonlinear. Start low and use Test to adjust it.',
+                style: TextStyle(color: Color(0xFF627D98)),
+              ),
+            ],
             const SizedBox(height: 8),
             TextField(
               controller: _templateController,
@@ -619,6 +656,13 @@ class _AnnouncementCard extends StatelessWidget {
             const Text(
               '{devices} automatically adds the second multipoint source when connected.',
               style: TextStyle(color: Color(0xFF627D98)),
+            ),
+            const SizedBox(height: 3),
+            Text(
+              isIOS
+                  ? 'iPhone and iPad use the current system media volume.'
+                  : 'Android temporarily raises quiet media volume to your saved target, then restores it.',
+              style: const TextStyle(color: Color(0xFF627D98)),
             ),
             const SizedBox(height: 10),
             OutlinedButton.icon(

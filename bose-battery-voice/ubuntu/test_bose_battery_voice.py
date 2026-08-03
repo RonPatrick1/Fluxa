@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,9 +46,54 @@ class DesktopBatteryVoiceTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            MODULE.connected_devices_phrase(sources),
+            MODULE.connected_devices_phrase(sources, MODULE.DesktopSettings()),
             "Ubuntu desktop and Ron's phone",
         )
+
+    def test_only_elected_multipoint_helper_announces_automatically(self):
+        ubuntu_view = (
+            SimpleNamespace(name="Alien3-Ubuntu", is_current_device=True),
+            SimpleNamespace(name="Ron's S26 Ultra", is_current_device=False),
+        )
+        phone_view = (
+            SimpleNamespace(name="Alien3-Ubuntu", is_current_device=False),
+            SimpleNamespace(name="Ron's S26 Ultra", is_current_device=True),
+        )
+
+        self.assertFalse(MODULE.should_announce_automatically(ubuntu_view))
+        self.assertTrue(MODULE.should_announce_automatically(phone_view))
+
+    def test_settings_round_trip(self):
+        settings = MODULE.DesktopSettings(
+            device_label="Alien desktop",
+            speech_template="{devices}: {battery}%",
+            announcement_volume_percent=82,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.ini"
+            MODULE.save_settings(settings, path)
+
+            self.assertEqual(MODULE.load_settings(path), settings)
+
+    def test_speech_temporarily_raises_and_restores_desktop_volume(self):
+        commands = []
+
+        def runner(command, **_kwargs):
+            commands.append(command)
+            if command[:2] == ["pactl", "get-sink-volume"]:
+                return "Volume: front-left: 13107 / 20% / -41.94 dB"
+            return ""
+
+        MODULE.speak(
+            80,
+            (),
+            runner,
+            MODULE.DesktopSettings(announcement_volume_percent=75),
+        )
+
+        self.assertEqual(commands[1][-1], "75%")
+        self.assertIn("Ubuntu desktop connected", commands[2][-1])
+        self.assertEqual(commands[3][-1], "20%")
 
 
 if __name__ == "__main__":

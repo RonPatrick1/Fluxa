@@ -27,9 +27,19 @@ It will not
 deliberately speak through the phone, tablet, computer, or the other Bose
 speaker. A 60-second cooldown suppresses duplicate connection events.
 
+When two devices running the helper receive the same new-connection event, they
+elect one of the Bose-reported source names as the automatic announcer. That
+helper names both sources in one sentence while the other stays quiet. Choosing
+Ubuntu as the output after it is already connected still announces from Ubuntu.
+Manual **Test** and Ubuntu `once` requests always run on the device where they
+were requested.
+
 On Android, if that speaker's remembered media volume is too low to hear, the
-helper temporarily raises the media stream to about one-third volume for the
-sentence, then restores the exact prior volume. Transient audio focus prevents
+helper temporarily raises the media stream to a configurable target. The safer
+default is 45% of Android's available volume steps (`7/15` on the tested Samsung
+phone), because Samsung's Bluetooth loudness curve is nonlinear. The helper
+verifies the applied index, then restores the prior volume if the user did not
+change it during speech. Transient audio focus prevents
 another app's media from playing at the temporary level. The app keeps the
 audio route and volume in place for another 1.2 seconds after text-to-speech
 finishes submitting audio, allowing the Bose Bluetooth buffer to play the last
@@ -75,7 +85,10 @@ optional notification permission keeps the required foreground-service entry
 out of the notification drawer; Android may still show the running helper in
 its system **Active apps** list. The app provides a shortcut to Android's
 notification settings if an older installation had already granted permission.
-The monitor restarts after a reboot if it was enabled.
+The monitor restarts after a reboot if it was enabled. App updates restart the
+monitor silently and suppress automatic speech until the currently connected
+Bose disconnects; this prevents installing a build from becoming an audible
+test.
 
 ## iPhone and iPad
 
@@ -92,6 +105,10 @@ Open the app once, allow Bluetooth, and turn on Monitoring.
 
 The iPhone/iPad implementation does not create local or push notifications, so
 there is no status item in Notification Center.
+
+iOS speech uses the maximum `AVSpeechUtterance` gain. Apple exposes that as a
+relative 0–1 speech level; the app does not override the user's system media
+volume, so set an audible media volume before using **Test custom announcement**.
 
 The iOS target declares Bluetooth-central restoration and background audio.
 iOS can restore its pending BLE connection after normal system termination,
@@ -115,9 +132,25 @@ Useful commands:
 
 ```sh
 python3 ubuntu/bose_battery_voice.py status
+python3 ubuntu/bose_battery_voice.py settings
 systemctl --user status bose-battery-voice.service
 journalctl --user -u bose-battery-voice.service
 ```
+
+Ubuntu settings are stored in
+`~/.config/bose-battery-voice/settings.ini`. Show the effective values or change
+them without reinstalling the service:
+
+```sh
+python3 ubuntu/bose_battery_voice.py settings \
+  --device-label "Alien3 Ubuntu" \
+  --volume 45 \
+  --template "{devices} connected to {speaker}. Battery {battery} percent."
+```
+
+The service reloads these values for each announcement. It temporarily raises a
+quiet default-sink volume to the configured percentage and restores it after
+speech.
 
 The following command is intentionally audible and only succeeds while
 Elizabeth's Bose is connected and active:

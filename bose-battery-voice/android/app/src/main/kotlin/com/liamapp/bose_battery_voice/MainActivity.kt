@@ -34,7 +34,14 @@ class MainActivity : FlutterActivity() {
         super.onStart()
         val monitoring = BatteryVoiceSettings.preferences(this)
             .getBoolean(BatteryVoiceSettings.KEY_MONITORING, false)
-        if (monitoring && hasRequiredPermissions()) startMonitor()
+        if (monitoring && hasRequiredPermissions()) {
+            val skipExisting = intent.getBooleanExtra(
+                BoseMonitoringService.EXTRA_SKIP_ALREADY_CONNECTED,
+                false,
+            )
+            startMonitor(skipExisting)
+            intent.removeExtra(BoseMonitoringService.EXTRA_SKIP_ALREADY_CONNECTED)
+        }
     }
 
     private fun handleMethod(call: MethodCall, result: MethodChannel.Result) {
@@ -121,6 +128,7 @@ class MainActivity : FlutterActivity() {
             "isSamsung" to Build.MANUFACTURER.equals("samsung", ignoreCase = true),
             "speechTemplate" to BatteryVoiceSettings.speechTemplate(this),
             "deviceLabel" to BatteryVoiceSettings.deviceLabel(this),
+            "announcementVolumePercent" to BatteryVoiceSettings.announcementVolumePercent(this),
             "elizabethEnabled" to preferences.getBoolean(
                 BatteryVoiceSettings.KEY_ELIZABETH_ENABLED,
                 true,
@@ -213,6 +221,8 @@ class MainActivity : FlutterActivity() {
     private fun setSpeechSettings(call: MethodCall, result: MethodChannel.Result) {
         val template = call.argument<String>("template")?.trim().orEmpty()
         val deviceLabel = call.argument<String>("deviceLabel")?.trim().orEmpty()
+        val announcementVolumePercent = call.argument<Int>("announcementVolumePercent")
+            ?: BatteryVoiceSettings.announcementVolumePercent(this)
         if (template.isEmpty() || template.length > 240) {
             result.error("speech", "The announcement must be 1 to 240 characters.", null)
             return
@@ -221,9 +231,17 @@ class MainActivity : FlutterActivity() {
             result.error("speech", "The device name must be 1 to 80 characters.", null)
             return
         }
+        if (announcementVolumePercent !in 20..75) {
+            result.error("speech", "Announcement volume must be between 20 and 75%.", null)
+            return
+        }
         BatteryVoiceSettings.preferences(this).edit()
             .putString(BatteryVoiceSettings.KEY_SPEECH_TEMPLATE, template)
             .putString(BatteryVoiceSettings.KEY_DEVICE_LABEL, deviceLabel)
+            .putInt(
+                BatteryVoiceSettings.KEY_ANNOUNCEMENT_VOLUME_PERCENT,
+                announcementVolumePercent,
+            )
             .apply()
         result.success(null)
     }
@@ -282,10 +300,14 @@ class MainActivity : FlutterActivity() {
         return false
     }
 
-    private fun startMonitor() {
+    private fun startMonitor(skipAlreadyConnected: Boolean = false) {
         startForegroundServiceCompat(
             Intent(this, BoseMonitoringService::class.java)
-                .setAction(BoseMonitoringService.ACTION_START),
+                .setAction(BoseMonitoringService.ACTION_START)
+                .putExtra(
+                    BoseMonitoringService.EXTRA_SKIP_ALREADY_CONNECTED,
+                    skipAlreadyConnected,
+                ),
         )
     }
 

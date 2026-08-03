@@ -77,4 +77,43 @@ class BmapCodecTest {
 
         assertEquals("Ron's phone and Ubuntu desktop", phrase)
     }
+
+    @Test
+    fun `elects one automatic announcer across two helper devices`() {
+        val ubuntuView = listOf(
+            BoseConnectedSource("Alien3-Ubuntu", isCurrentDevice = true),
+            BoseConnectedSource("Ron's S26 Ultra", isCurrentDevice = false),
+        )
+        val phoneView = listOf(
+            BoseConnectedSource("Alien3-Ubuntu", isCurrentDevice = false),
+            BoseConnectedSource("Ron's S26 Ultra", isCurrentDevice = true),
+        )
+
+        assertFalse(BatteryVoiceSettings.shouldAnnounceAutomatically(ubuntuView))
+        assertTrue(BatteryVoiceSettings.shouldAnnounceAutomatically(phoneView))
+        assertEquals(
+            "Ron's S26 Ultra",
+            BatteryVoiceSettings.automaticAnnouncer(phoneView)?.name,
+        )
+    }
+
+    @Test
+    fun `uses a safer Samsung announcement volume step`() {
+        assertEquals(
+            7,
+            BatteryVoiceSettings.announcementVolumeIndex(
+                currentVolume = 5,
+                maximumVolume = 15,
+                targetPercent = 45,
+            ),
+        )
+        assertEquals(
+            10,
+            BatteryVoiceSettings.announcementVolumeIndex(
+                currentVolume = 10,
+                maximumVolume = 15,
+                targetPercent = 45,
+            ),
+        )
+    }
 }
