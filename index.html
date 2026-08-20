@@ -3,38 +3,259 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fluxa Media Library</title>
-    <link rel="stylesheet" href="style.css">
+    <meta name="theme-color" content="#071015">
+    <link rel="icon" type="image/png" sizes="192x192" href="android-chrome-192x192.png?v=20260815-02">
+    <link rel="shortcut icon" type="image/png" href="android-chrome-192x192.png?v=20260815-02">
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=20260815-01">
+    <link rel="mask-icon" href="safari-pinned-tab.svg?v=20260815-01" color="#29d3ae">
+    <link rel="manifest" href="site.webmanifest?v=20260815-01">
+    <title>Fluxa — Local media, beautifully controlled</title>
+    <link rel="stylesheet" href="style.css?v=20260819-26">
 </head>
-<body>
-    <header>
-        <h1>Fluxa Media Library</h1>
-        <button id="theme-toggle">Toggle Theme</button>
+<body class="app-booting">
+    <header class="topbar">
+        <a class="brand focusable" href="#library" data-focusable="true" aria-label="Fluxa home">
+            <img class="brand-mark" src="favicon.svg?v=20260815-01" alt="">
+            <span class="brand-name">Fluxa</span>
+        </a>
+        <div class="search-box">
+            <span class="search-icon" aria-hidden="true">⌕</span>
+            <input id="search-input" class="focusable" data-focusable="true" data-tv-input type="search"
+                   aria-label="Search this library"
+                   placeholder="Search this library" autocomplete="off">
+            <button class="keyboard-icon-button focusable" data-tv-input-toggle="search-input"
+                    data-focusable="true" type="button" aria-label="Use on-screen keyboard"
+                    aria-pressed="false" title="Use on-screen keyboard" hidden>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zm0 2v10h18V7H3zm2 2h2v2H5V9zm3 0h2v2H8V9zm3 0h2v2h-2V9zm3 0h2v2h-2V9zm3 0h2v2h-2V9zM5 13h2v2H5v-2zm3 0h8v2H8v-2zm9 0h2v2h-2v-2z"/></svg>
+            </button>
+        </div>
+        <div id="server-state" class="server-state" aria-live="polite">
+            <span class="status-dot"></span>
+            <span class="status-copy">Connecting</span>
+        </div>
+        <button id="fredplayer-logout-button" class="logout-button focusable" data-focusable="true" hidden>FredPlayer sign out</button>
+        <button id="logout-button" class="logout-button focusable" data-focusable="true" hidden>Sign out</button>
     </header>
-    <nav>
-        <ul>
-            <li><a href="#movies">Movies</a></li>
-            <li><a href="#tv-shows">TV Shows</a></li>
-            <li><a href="#music">Music</a></li>
-        </ul>
-    </nav>
-    <main>
-        <section id="movies">
-            <h2>Movies</h2>
-            <!-- Movie content will go here -->
+
+    <div class="app-shell">
+        <aside class="sidebar" aria-label="Library navigation">
+            <nav>
+                <p class="nav-label">Browse</p>
+                <button class="nav-item active focusable" data-filter="all" data-focusable="true">
+                    <span class="nav-glyph">▦</span><span>All media</span>
+                </button>
+                <button class="nav-item focusable" data-filter="video" data-focusable="true">
+                    <span class="nav-glyph">▶</span><span>Video</span>
+                </button>
+                <button id="music-workspace" class="nav-item focusable" data-focusable="true">
+                    <span class="nav-glyph">♫</span><span>Music</span>
+                </button>
+                <p class="nav-label playlist-label">Playlists</p>
+                <button id="new-playlist-button" class="nav-item focusable" data-focusable="true" type="button">
+                    <span class="nav-glyph">+</span><span>New playlist</span>
+                </button>
+                <div id="playlist-navigation"></div>
+                <p class="nav-label library-label">Libraries</p>
+                <div id="library-navigation"></div>
+            </nav>
+            <div class="storage-promise">
+                <span class="shield">◇</span>
+                <div><strong>Read-only media</strong><br>Original files stay in place.</div>
+            </div>
+            <div id="sidebar-resizer" class="sidebar-resizer" role="separator"
+                 aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>
+        </aside>
+
+        <main id="library" class="main-content">
+            <section class="hero" aria-labelledby="hero-title" hidden>
+                <div class="hero-glow"></div>
+                <div class="hero-copy">
+                    <p class="eyebrow">YOUR HOUSE. YOUR MEDIA.</p>
+                    <h1 id="hero-title">Everything you love.<br><span>Nothing you don’t.</span></h1>
+                    <p>One private library for every browser and TV, with predictive control over sudden volume spikes.</p>
+                    <div class="hero-actions">
+                        <button id="scan-button" class="primary-button focusable" data-focusable="true">Scan libraries</button>
+                        <span id="storage-note" class="storage-note">0 bytes of media copied</span>
+                        <label class="hero-dismiss" for="hide-welcome-panel">
+                            <input id="hide-welcome-panel" class="focusable" data-focusable="true" type="checkbox">
+                            <span>Never show again</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="leveler-visual" aria-hidden="true">
+                    <div class="leveler-title"><span>Audio Leveler</span><b>LOOKAHEAD</b></div>
+                    <div class="waveform">
+                        <i style="height:20%"></i><i style="height:28%"></i><i style="height:36%"></i>
+                        <i style="height:30%"></i><i style="height:46%"></i><i style="height:82%"></i>
+                        <i style="height:92%"></i><i style="height:78%"></i><i style="height:62%"></i>
+                        <i style="height:38%"></i><i style="height:30%"></i><i style="height:24%"></i>
+                        <span class="ceiling-line"></span>
+                    </div>
+                    <p>Sees the spike before you hear it.</p>
+                </div>
+            </section>
+
+            <section class="collection" aria-labelledby="collection-title">
+                <div class="section-heading">
+                    <div>
+                        <p class="eyebrow" id="section-context">LOCAL LIBRARY</p>
+                        <h2 id="collection-title">All media</h2>
+                        <nav id="folder-nav" class="folder-nav" hidden aria-label="Folder path"></nav>
+                    </div>
+                    <div class="section-heading-actions">
+                        <button id="scan-toolbar-button" class="secondary-button compact focusable"
+                                data-focusable="true" type="button">Scan libraries</button>
+                        <div id="view-switch" class="view-switch" role="group" aria-label="Media view">
+                            <button id="grid-view" class="view-button focusable" data-focusable="true"
+                                    type="button" aria-label="Thumbnail view" title="Thumbnail view" aria-pressed="true">▦</button>
+                            <button id="list-view" class="view-button focusable" data-focusable="true"
+                                    type="button" aria-label="List view" title="List view" aria-pressed="false">☷</button>
+                        </div>
+                        <div id="playlist-actions" class="playlist-actions" hidden>
+                            <button id="play-playlist" class="primary-button compact focusable" data-focusable="true">▶ Play</button>
+                            <button id="shuffle-playlist" class="secondary-button compact focusable" data-focusable="true">⤨ Shuffle Play</button>
+                        </div>
+                        <button id="new-playlist-toolbar" class="secondary-button compact focusable"
+                                data-focusable="true" type="button">New playlist</button>
+                        <button id="add-to-playlist" class="secondary-button compact focusable" data-focusable="true"
+                                type="button" hidden>Add to playlist</button>
+                        <span id="result-count" class="result-count">Loading…</span>
+                    </div>
+                </div>
+                <div id="music-browser-tabs" class="music-browser-tabs" hidden role="tablist" aria-label="Browse music">
+                    <button class="music-browser-tab focusable" data-music-view="all" data-focusable="true" type="button">All Music</button>
+                    <button class="music-browser-tab focusable" data-music-view="playlists" data-focusable="true" type="button">Playlists</button>
+                    <button class="music-browser-tab focusable active" data-music-view="albums" data-focusable="true" type="button">Albums</button>
+                    <button id="music-back-button" class="music-browser-tab focusable" data-focusable="true" type="button" hidden>← Back</button>
+                </div>
+                <div id="media-grid" class="media-grid" aria-live="polite"></div>
+                <nav id="media-pagination" class="media-pagination" aria-label="Media pages" hidden>
+                    <button id="previous-media-page" class="page-button focusable" data-focusable="true"
+                            type="button" aria-label="Previous media page">←</button>
+                    <span id="media-page-status"></span>
+                    <button id="next-media-page" class="page-button focusable" data-focusable="true"
+                            type="button" aria-label="Next media page">→</button>
+                </nav>
+                <div id="empty-state" class="empty-state" hidden>
+                    <span>◎</span>
+                    <h3>No media here yet</h3>
+                    <p>Run a library scan to catalog your existing files. Fluxa will not copy them.</p>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <div id="player-modal" class="player-modal" hidden role="dialog" aria-modal="true" aria-labelledby="player-title">
+        <div class="player-backdrop" data-close-player="true"></div>
+        <section class="player-panel">
+            <div id="player-stage" class="player-stage"></div>
+            <div class="player-details">
+                <div class="player-copy">
+                    <p id="player-library" class="eyebrow"></p>
+                    <h2 id="player-title">Loading…</h2>
+                    <p id="player-technical" class="technical-copy"></p>
+                </div>
+                <div class="player-tools">
+                    <div class="caption-card">
+                        <div>
+                            <p class="eyebrow">CLOSED CAPTIONS</p>
+                            <label class="setting-toggle" for="captions-current">
+                                <input id="captions-current" class="focusable" data-focusable="true" type="checkbox">
+                                <span>Show for this video</span>
+                            </label>
+                            <select id="caption-track" class="caption-track focusable" data-focusable="true" aria-label="Caption track"></select>
+                            <label class="setting-toggle global" for="captions-global">
+                                <input id="captions-global" class="focusable" data-focusable="true" type="checkbox">
+                                <span>Automatically for every video on this device</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="analysis-card">
+                        <div>
+                            <p class="eyebrow">AUDIO LEVELING</p>
+                            <strong id="analysis-title">Live lookahead active</strong>
+                            <p id="analysis-copy">Fluxa levels upcoming audio while you watch.</p>
+                        </div>
+                        <button id="analyze-button" class="secondary-button focusable" data-focusable="true">Build precise map</button>
+                    </div>
+                    <div class="compressor-card">
+                        <p class="eyebrow">SPIKE COMPRESSOR</p>
+                        <label class="setting-toggle" for="compressor-enabled">
+                            <input id="compressor-enabled" class="focusable" data-focusable="true" type="checkbox" checked>
+                            <span>Reduce loud themes and sudden peaks</span>
+                        </label>
+                        <label class="compressor-control" for="compressor-threshold">
+                            <span>Starts reducing above</span>
+                            <output id="compressor-threshold-value">−24 dB</output>
+                            <input id="compressor-threshold" class="focusable" data-focusable="true" type="range" min="-36" max="-8" step="1" value="-24">
+                        </label>
+                        <label class="compressor-control" for="compressor-ratio">
+                            <span>Strength</span>
+                            <output id="compressor-ratio-value">8:1</output>
+                            <input id="compressor-ratio" class="focusable" data-focusable="true" type="range" min="2" max="16" step="1" value="8">
+                        </label>
+                        <label class="compressor-control" for="compressor-output-gain">
+                            <span>Output gain</span>
+                            <output id="compressor-output-gain-value">+9 dB</output>
+                            <input id="compressor-output-gain" class="focusable" data-focusable="true" type="range" min="-12" max="18" step="0.5" value="9">
+                        </label>
+                        <label class="compressor-control" for="compressor-ceiling">
+                            <span>Maximum output</span>
+                            <output id="compressor-ceiling-value">−3 dB</output>
+                            <input id="compressor-ceiling" class="focusable" data-focusable="true" type="range" min="-12" max="-1" step="0.5" value="-3">
+                        </label>
+                        <label class="compressor-control" for="compressor-attack">
+                            <span>Attack</span>
+                            <output id="compressor-attack-value">15 ms</output>
+                            <input id="compressor-attack" class="focusable" data-focusable="true" type="range" min="1" max="200" step="1" value="15">
+                        </label>
+                        <label class="compressor-control" for="compressor-release">
+                            <span>Release</span>
+                            <output id="compressor-release-value">750 ms</output>
+                            <input id="compressor-release" class="focusable" data-focusable="true" type="range" min="50" max="3000" step="50" value="750">
+                        </label>
+                        <label class="compressor-control" for="compressor-knee">
+                            <span>Knee</span>
+                            <output id="compressor-knee-value">4</output>
+                            <input id="compressor-knee" class="focusable" data-focusable="true" type="range" min="1" max="8" step="0.5" value="4">
+                        </label>
+                        <p class="compressor-note">Lower threshold and higher strength reduce loud sections more. Output gain restores listening volume before the safety limiter. Changes resume at the same point.</p>
+                        <p id="compressor-scope" class="compressor-scope">Using global settings</p>
+                        <div class="compressor-actions">
+                            <button id="compressor-create-video" class="secondary-button focusable" data-focusable="true">Create video override</button>
+                            <button id="compressor-video-to-global" class="secondary-button focusable" data-focusable="true">Video → global</button>
+                            <button id="compressor-global-to-video" class="secondary-button focusable" data-focusable="true">Global → video</button>
+                            <button id="compressor-follow-global" class="secondary-button focusable" data-focusable="true">Follow global</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </section>
-        <section id="tv-shows">
-            <h2>TV Shows</h2>
-            <!-- TV Show content will go here -->
-        </section>
-        <section id="music">
-            <h2>Music</h2>
-            <!-- Music content will go here -->
-        </section>
-    </main>
-    <footer>
-        <p>&copy; 2026 Fluxa Media Library</p>
-    </footer>
-    <script src="script.js"></script>
+    </div>
+
+    <div id="playlist-picker" class="playlist-picker" hidden>
+        <div class="playlist-picker-panel" role="dialog" aria-modal="true" aria-labelledby="playlist-picker-title">
+            <p class="eyebrow">PLAYLIST</p>
+            <h2 id="playlist-picker-title">Add to a playlist</h2>
+            <p id="playlist-picker-copy" class="playlist-picker-copy"></p>
+            <div id="playlist-picker-list" class="playlist-picker-list"></div>
+            <form id="playlist-picker-create" class="playlist-picker-create">
+                <input id="playlist-picker-name" class="focusable" data-focusable="true" data-tv-input
+                       type="text" maxlength="200" placeholder="New playlist name" autocomplete="off"
+                       aria-label="New playlist name">
+                <button id="playlist-picker-create-button" class="secondary-button compact focusable"
+                        data-focusable="true" type="submit">Create and add</button>
+            </form>
+            <button id="playlist-picker-cancel" class="secondary-button compact focusable"
+                    data-focusable="true" type="button">Cancel</button>
+        </div>
+    </div>
+    <div id="toast" class="toast" hidden role="status"></div>
+    <div id="fredplayer-layer" class="fredplayer-layer" hidden>
+        <iframe id="fredplayer-frame" title="FredPlayer" allow="autoplay" loading="eager"></iframe>
+    </div>
+    <script src="vendor/hls.min.js"></script>
+    <script src="tv-input.js?v=20260813-01"></script>
+    <script src="script.js?v=20260819-26"></script>
 </body>
 </html>

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#071015">
+    <link rel="icon" type="image/png" sizes="192x192" href="android-chrome-192x192.png?v=20260815-02">
+    <link rel="shortcut icon" type="image/png" href="android-chrome-192x192.png?v=20260815-02">
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=20260815-01">
+    <link rel="mask-icon" href="safari-pinned-tab.svg?v=20260815-01" color="#29d3ae">
+    <link rel="manifest" href="site.webmanifest?v=20260815-01">
+    <title>Sign in to Fluxa</title>
+    <style>
+        *{box-sizing:border-box}html{font-family:"Segoe UI",Arial,sans-serif;background:#071015;color:#f4f7f7}body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 50% 20%,rgba(35,213,173,.13),transparent 34%),#071015}.panel{width:min(430px,100%);padding:38px;border:1px solid #294047;border-radius:22px;background:#0d1b20;box-shadow:0 28px 90px rgba(0,0,0,.48)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:32px}.mark{width:42px;height:42px;display:block}.brand strong{font-size:27px}.eyebrow{margin:0 0 10px;color:#23d5ad;font-size:11px;font-weight:800;letter-spacing:1.5px}.panel h1{margin:0;font-size:34px;letter-spacing:-1.2px}.intro{margin:12px 0 26px;color:#8da3aa;line-height:1.6}label{display:block;margin:14px 0 8px;color:#bac8cc;font-size:13px;font-weight:700}.password-row{position:relative}input{width:100%;height:50px;padding:0 56px 0 14px;border:1px solid #2b4148;border-radius:11px;outline:0;color:#fff;background:#081216;font:inherit}input:focus{border-color:#23d5ad;box-shadow:0 0 0 3px rgba(35,213,173,.15)}button{width:100%;height:50px;margin-top:16px;border:0;border-radius:11px;color:#05120f;background:#23d5ad;font:inherit;font-weight:800;cursor:pointer}button:hover,button:focus{background:#56dfbf;outline:3px solid rgba(35,213,173,.18)}.keyboard-icon-button{display:none;position:absolute;right:4px;top:4px;width:42px;height:42px;margin:0;padding:0;border:1px solid #2b4148;color:#9fb5b9;background:#102128}.keyboard-icon-button svg{width:21px;height:21px;fill:currentColor}.tv-keyboard-ready .keyboard-icon-button{display:grid;place-items:center}.keyboard-icon-button.active{color:#23d5ad;border-color:#23d5ad}.error{margin:0 0 18px;padding:11px 13px;border:1px solid #754747;border-radius:9px;color:#ffc0c0;background:#2b1717;font-size:13px}.privacy{margin:22px 0 0;color:#5f777e;font-size:11px;line-height:1.5}.secondary-link{display:block;margin-top:18px;color:#8da3aa;text-align:center;text-decoration:none;font-size:13px}.secondary-link:hover,.secondary-link:focus{color:#56dfbf;outline:none;text-decoration:underline}.reset-view{display:none}.reset-mode .login-view{display:none}.reset-mode .reset-view{display:block}.reset-form-unavailable{display:none}.tizen-tv .panel{width:min(520px,88vw);font-size:18px}.tizen-tv input{height:60px;font-size:20px}.tizen-tv .keyboard-icon-button{top:6px;width:48px;height:48px}
+    </style>
+</head>
+<body>
+    <main class="panel {{RESET_CLASS}}">
+        <div class="brand"><img class="mark" src="favicon.svg?v=20260815-01" alt=""><strong>Fluxa</strong></div>
+        <section class="login-view">
+            <p class="eyebrow">PRIVATE HOUSEHOLD LIBRARY</p>
+            <h1>Welcome home.</h1>
+            <p class="intro">Enter the household password to reach your local video and audio library.</p>
+            {{ERROR}}
+            <form data-tv-login-form method="post" action="{{PREFIX}}/api/auth/login">
+                <input type="hidden" name="next" value="{{NEXT}}">
+                <label for="password">Household password</label>
+                <div class="password-row">
+                    <input id="password" name="password" data-tv-input type="password" autocomplete="current-password" minlength="12" required {{LOGIN_AUTOFOCUS}}>
+                    <button class="keyboard-icon-button" data-tv-input-toggle="password" type="button"
+                            aria-label="Use on-screen keyboard" aria-pressed="false" title="Use on-screen keyboard" hidden>
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zm0 2v10h18V7H3zm2 2h2v2H5V9zm3 0h2v2H8V9zm3 0h2v2h-2V9zm3 0h2v2h-2V9zm3 0h2v2h-2V9zM5 13h2v2H5v-2zm3 0h8v2H8v-2zm9 0h2v2h-2v-2z"/></svg>
+                    </button>
+                </div>
+                <button type="submit">Open Fluxa</button>
+            </form>
+            <a class="secondary-link" href="{{PREFIX}}/login?reset=1">Reset household password</a>
+        </section>
+        <section class="reset-view">
+            <p class="eyebrow">SECURE PASSWORD RESET</p>
+            <h1>Reset password.</h1>
+            <p class="intro">{{RESET_INTRO}}</p>
+            {{ERROR}}
+            <form class="{{RESET_FORM_CLASS}}" data-tv-login-form method="post" action="{{PREFIX}}/api/auth/reset-password">
+                <label for="new-password">New household password</label>
+                <div class="password-row">
+                    <input id="new-password" name="password" data-tv-input type="password" autocomplete="new-password" minlength="12" required {{RESET_AUTOFOCUS}}>
+                    <button class="keyboard-icon-button" data-tv-input-toggle="new-password" type="button" aria-label="Use on-screen keyboard" aria-pressed="false" title="Use on-screen keyboard" hidden>
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zm0 2v10h18V7H3zm2 2h2v2H5V9zm3 0h2v2H8V9zm3 0h2v2h-2V9zm3 0h2v2h-2V9zm3 0h2v2h-2V9zM5 13h2v2H5v-2zm3 0h8v2H8v-2zm9 0h2v2h-2v-2z"/></svg>
+                    </button>
+                </div>
+                <label for="confirm-password">Confirm new password</label>
+                <div class="password-row">
+                    <input id="confirm-password" name="confirm_password" data-tv-input type="password" autocomplete="new-password" minlength="12" required>
+                    <button class="keyboard-icon-button" data-tv-input-toggle="confirm-password" type="button" aria-label="Use on-screen keyboard" aria-pressed="false" title="Use on-screen keyboard" hidden>
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zm0 2v10h18V7H3zm2 2h2v2H5V9zm3 0h2v2H8V9zm3 0h2v2h-2V9zm3 0h2v2h-2V9zm3 0h2v2h-2V9zM5 13h2v2H5v-2zm3 0h8v2H8v-2zm9 0h2v2h-2v-2z"/></svg>
+                    </button>
+                </div>
+                <button type="submit">Save new password</button>
+            </form>
+            <a class="secondary-link" href="{{PREFIX}}/login">Back to sign in</a>
+        </section>
+        <p class="privacy">The password is verified on your Fluxa server. It is never sent anywhere else.</p>
+    </main>
+    <script src="{{PREFIX}}/tv-input.js?v=20260813-01"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+[Unit]
+Description=Fluxa native C++ local media server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/www/Fluxa
+ExecStart=/var/www/Fluxa/build/fluxa-server --config /var/www/Fluxa/fluxa.json serve
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+UMask=0027
+
+[Install]
+WantedBy=default.target

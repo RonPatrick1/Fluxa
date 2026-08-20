@@ -1,0 +1,10 @@
+{
+  "name": "fluxa-browser-tests",
+  "private": true,
+  "scripts": {
+    "test:browser": "playwright test tests/compatibility.spec.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}

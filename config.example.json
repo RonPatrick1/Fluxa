@@ -1,0 +1,26 @@
+{
+  "host": "0.0.0.0",
+  "port": 8097,
+  "data_dir": ".fluxa",
+  "scan_on_start": false,
+  "probe_on_start": true,
+  "fredplayer_artwork": {
+    "enabled": false,
+    "host": "127.0.0.1",
+    "port": 8790,
+    "music_dir": "/path/to/fredplayer/music",
+    "env_file": "/path/to/FredPlayer/server/.env"
+  },
+  "libraries": [
+    {
+      "name": "Videos",
+      "kind": "video",
+      "path": "/path/to/videos"
+    },
+    {
+      "name": "Music",
+      "kind": "music",
+      "path": "/path/to/music"
+    }
+  ]
+}

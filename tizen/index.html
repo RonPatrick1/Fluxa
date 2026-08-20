@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=1920, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; img-src 'self' http://192.168.0.178:8097 https://patrick-lamphier.com; connect-src http://192.168.0.178:8097 https://patrick-lamphier.com; frame-src http://192.168.0.178:8097 https://patrick-lamphier.com; style-src 'self'; script-src 'self'">
+    <title>Fluxa</title>
+    <link rel="stylesheet" href="tv-shell.css">
+</head>
+<body>
+    <iframe id="app-frame" class="app-frame" title="Fluxa" aria-hidden="true" allow="autoplay"></iframe>
+    <main class="launch-stage" aria-label="Fluxa is starting">
+        <video id="launch-video" class="launch-video" autoplay muted playsinline
+               preload="auto" poster="launch-poster.png" aria-hidden="true">
+            <source src="launch-intro.mp4" type="video/mp4">
+        </video>
+    </main>
+    <script src="tv-shell.js"></script>
+</body>
+</html>
