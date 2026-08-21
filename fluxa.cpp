@@ -782,6 +782,7 @@ public:
         std::optional<int> subtitle_ordinal;
         std::string subtitle_kind;
         json compressor;
+        json bass;
     };
 
     std::shared_ptr<CompatibilitySession> start(StartOptions options) {
@@ -980,6 +981,13 @@ private:
             gain << std::fixed << std::setprecision(2)
                  << "volume=" << compressor.value("output_gain_db", 9.0) << "dB:precision=float";
             audio_filters.push_back(gain.str());
+        }
+        if (options.bass.value("enabled", false)) {
+            std::ostringstream bass;
+            bass << std::fixed << std::setprecision(2)
+                 << "bass=g=" << options.bass.value("gain_db", 4.0)
+                 << ":f=95:w=0.70:t=q:precision=f32";
+            audio_filters.push_back(bass.str());
         }
         double ceiling = std::pow(10.0, compressor.value("ceiling_db", -3.0) / 20.0);
         std::ostringstream limiter;
@@ -1634,6 +1642,12 @@ public:
             if (!found) throw ApiError(400, "Subtitle track not found");
         }
         auto compressor = compressor_settings(media_id)["effective"];
+        json bass = {{"enabled", false}, {"gain_db", 4.0}};
+        if (payload.contains("bass") && payload["bass"].is_object()) {
+            const auto& requested = payload["bass"];
+            bass["enabled"] = requested.value("enabled", false);
+            bass["gain_db"] = bounded_number(requested, "gain_db", 0.0, 9.0, 4.0);
+        }
         CompatibilityManager::StartOptions options;
         options.media_id = media_id;
         options.source = resolve_media_path(media_id);
@@ -1643,13 +1657,14 @@ public:
         options.analysis_status = string_or(row, "analysis_status");
         options.envelope = parse_json_field(row, "envelope_json");
         options.segment_format = payload.value("segment_format", "mpegts") == "fmp4" ? "fmp4" : "mpegts";
-        options.subtitle_ordinal = subtitle; options.subtitle_kind = subtitle_kind; options.compressor = compressor;
+        options.subtitle_ordinal = subtitle; options.subtitle_kind = subtitle_kind;
+        options.compressor = compressor; options.bass = bass;
         auto session = compatibility_.start(std::move(options));
         return {
             {"session_id", session->id}, {"manifest_url", "/api/compat/" + session->id + "/index.m3u8"},
             {"start_ms", session->start_ms}, {"video_mode", session->video_mode}, {"audio_mode", "AAC stereo"},
             {"segment_format", session->segment_format}, {"leveling_mode", session->leveling_mode},
-            {"leveling_applied", true}, {"compressor", compressor},
+            {"leveling_applied", true}, {"compressor", compressor}, {"bass", bass},
             {"subtitle_ordinal", session->subtitle_ordinal ? json(*session->subtitle_ordinal) : json(nullptr)}
         };
     }

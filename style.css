@@ -1418,18 +1418,10 @@ button {
     opacity: 0.58;
 }
 
-/* Shared loader stage. The actual original Fluxa design is isolated below in
-   .fluxa-loader-original; experiments belong in modifier classes. */
+/* Shared loader stage. */
 .fluxa-loader {
     position: absolute;
     z-index: 3;
-    top: 50%;
-    left: 50%;
-    width: 104px;
-    height: 104px;
-    margin: -52px 0 0 -52px;
-    filter: drop-shadow(0 0 18px rgba(41, 211, 174, 0.38));
-    animation: loader-breathe 1.8s ease-in-out infinite;
 }
 
 .playback-buffering {
@@ -1440,93 +1432,6 @@ button {
     bottom: 0;
     left: 0;
     pointer-events: none;
-}
-
-.fluxa-loader i {
-    position: absolute;
-    top: 18px;
-    left: 18px;
-    width: 68px;
-    height: 68px;
-    border: 7px solid transparent;
-    border-top-color: #29d3ae;
-    border-radius: 50%;
-    transform-origin: 34px 34px;
-    animation: loader-orbit 1.15s linear infinite;
-}
-
-.fluxa-loader i:nth-child(2) { transform: rotate(120deg); animation-delay: -0.38s; opacity: .82; }
-.fluxa-loader i:nth-child(3) { transform: rotate(240deg); animation-delay: -0.76s; opacity: .64; }
-.fluxa-loader span {
-    position: absolute;
-    top: 43px;
-    left: 43px;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: #071015;
-    box-shadow: 0 0 0 4px rgba(41, 211, 174, 0.35);
-}
-
-@keyframes loader-orbit { to { transform: rotate(360deg); } }
-@keyframes loader-breathe { 50% { transform: scale(1.08); } }
-
-/* Original Fluxa orbit loader, recovered from the pre-Grok Codex session.
-   It deliberately has large and small moving parts around the Fluxa turbine. */
-.fluxa-loader-original {
-    width: 210px;
-    height: 210px;
-    margin: -105px 0 0 -105px;
-    filter: drop-shadow(0 0 28px rgba(41, 211, 174, 0.3));
-    animation: none;
-}
-
-.fluxa-loader.fluxa-loader-original i {
-    top: 0;
-    left: 0;
-    width: 200px;
-    height: 200px;
-    border-width: 5px;
-    border-top-color: #29d3ae;
-    transform: none;
-    transform-origin: 50% 50%;
-    animation: original-loader-spin 1.35s linear infinite;
-    opacity: 1;
-}
-
-.fluxa-loader.fluxa-loader-original i:nth-child(2) {
-    border-top-color: #176d66;
-    animation-duration: 1.8s;
-    animation-direction: reverse;
-}
-
-.fluxa-loader.fluxa-loader-original i:nth-child(3) {
-    top: 10px;
-    left: 10px;
-    width: 180px;
-    height: 180px;
-    opacity: 0.55;
-    animation-duration: 1.05s;
-}
-
-.fluxa-loader-original span { display: none; }
-
-.fluxa-loader-original img {
-    position: absolute;
-    top: 25px;
-    left: 25px;
-    width: 160px;
-    height: 160px;
-    border-radius: 30px;
-    animation: original-loader-logo-breathe 1.8s ease-in-out infinite;
-}
-
-@keyframes original-loader-spin {
-    to { transform: rotate(360deg); }
-}
-
-@keyframes original-loader-logo-breathe {
-    50% { transform: scale(0.94); opacity: 0.82; }
 }
 
 .fluxa-loader.fluxa-loader-hud {
@@ -1718,37 +1623,7 @@ button {
 }
 
 .fluxa-loader-wrap .fluxa-loader {
-    /* Preserve the original spinner's own absolute centering. The comparison
-       controls are overlaid below it and do not participate in its layout. */
     position: absolute;
-}
-
-.fluxa-loader-switch {
-    position: absolute;
-    top: 228px;
-    left: 50%;
-    display: flex;
-    gap: 8px;
-    transform: translateX(-50%);
-    pointer-events: auto;
-}
-
-.fluxa-loader-switch button {
-    height: 32px;
-    padding: 0 12px;
-    border: 1px solid rgba(41, 211, 174, 0.28);
-    border-radius: 999px;
-    background: rgba(7, 16, 21, 0.82);
-    color: #8da3aa;
-    font: 700 11px/1 "Segoe UI", Arial, sans-serif;
-    letter-spacing: 0.6px;
-    text-transform: uppercase;
-    cursor: pointer;
-}
-
-.fluxa-loader-switch button.is-active {
-    border-color: #29d3ae;
-    color: #29d3ae;
 }
 .player-video { opacity: 1; }
 .player-video.pending { opacity: 0; }
@@ -1842,6 +1717,7 @@ button {
     background: #101f24;
 }
 
+.bass-card,
 .compressor-card {
     padding: 14px 16px;
     border: 1px solid #253a40;

@@ -4,8 +4,30 @@
     var basePath = window.location.pathname.replace(/\/(?:index\.html)?$/, "");
     if (basePath === "/") { basePath = ""; }
     var isTizenTv = window.location.search.indexOf("platform=tizen") !== -1;
-    var clientVersion = "20260819-26";
+    var isTeslaBrowser = detectTeslaBrowser();
+    var clientVersion = "20260820-35";
     var fredPlayerSessionKey = "fluxa-fredplayer-session-v1";
+
+    function detectTeslaBrowser() {
+        var userAgent = navigator.userAgent || "";
+        if (/Tesla|QtCarBrowser/i.test(userAgent)) { return true; }
+
+        // Recent Tesla firmware removes its identifying token and presents as
+        // ordinary desktop Chrome on X11. Use the remaining car-browser
+        // fingerprint, based on physical rather than CSS pixels so Tesla's
+        // device-pixel-ratio changes do not break detection.
+        if (!/\(X11;\s+(?:GNU\/)?Linux\s+x86_64\)/i.test(userAgent)
+                || !/Chrome\/\d+/i.test(userAgent)
+                || (navigator.maxTouchPoints || 0) < 10) {
+            return false;
+        }
+        var ratio = Number(window.devicePixelRatio) || 1;
+        var width = Math.round(Math.max(window.screen.width, window.screen.height) * ratio);
+        var height = Math.round(Math.min(window.screen.width, window.screen.height) * ratio);
+        var standardPanel = width >= 1840 && width <= 2000 && height >= 1120 && height <= 1280;
+        var largePanel = width >= 2100 && width <= 2320 && height >= 1200 && height <= 1420;
+        return standardPanel || largePanel;
+    }
 
     var state = {
         libraries: [],
@@ -53,12 +75,17 @@
         compressorAttack: 15,
         compressorRelease: 750,
         compressorKnee: 4,
+        bassEnhancement: getStoredPreference("fluxa-bass-enhancement")
+            ? getStoredPreference("fluxa-bass-enhancement") === "yes"
+            : isTizenTv,
+        bassGain: boundedNumber(getStoredPreference("fluxa-bass-gain"), 0, 9, 4),
         globalCompressor: null,
         videoCompressor: null,
         compressorSource: "global",
         mediaPage: 0,
         mediaPageSize: isTizenTv ? 25 : 120,
         mediaTotal: 0,
+        mediaPageChanging: false,
         folders: [],
         mediaView: getStoredPreference("fluxa-media-view") === "list" ? "list" : "grid",
         welcomeHidden: getStoredPreference("fluxa-hide-welcome") === "yes",
@@ -70,6 +97,7 @@
         pendingMusicQueue: null,
         playbackSamplePositionMs: null,
         playbackSampleAt: null,
+        collectionStartPending: false,
         videoMediaSessionInstalled: false,
         playerGeometryFrame: null,
         playerControlsResizeObserver: null,
@@ -136,6 +164,9 @@
         elements.captionsCurrent = document.getElementById("captions-current");
         elements.captionsGlobal = document.getElementById("captions-global");
         elements.captionTrack = document.getElementById("caption-track");
+        elements.bassEnhancement = document.getElementById("bass-enhancement");
+        elements.bassGain = document.getElementById("bass-gain");
+        elements.bassGainValue = document.getElementById("bass-gain-value");
         elements.compressorEnabled = document.getElementById("compressor-enabled");
         elements.compressorThreshold = document.getElementById("compressor-threshold");
         elements.compressorThresholdValue = document.getElementById("compressor-threshold-value");
@@ -223,6 +254,7 @@
             state.playlists = responses[2].playlists || [];
             elements.logout.hidden = !responses[3].public_proxy;
             configureCompressor(responses[4]);
+            configureBass();
             state.fredplayerAuthorized = responses[5].authenticated === true;
             setStoredPreference("fluxa-fredplayer-authorized", state.fredplayerAuthorized ? "yes" : "no");
             elements.fredPlayerLogout.hidden = !state.fredplayerAuthorized;
@@ -1152,6 +1184,7 @@
     }
 
     function changeMediaPage(direction) {
+        if (state.mediaPageChanging && state.playlist === null) { return; }
         var pageCount = Math.max(1, Math.ceil(state.mediaTotal / state.mediaPageSize));
         var nextPage = Math.max(0, Math.min(pageCount - 1, state.mediaPage + direction));
         if (nextPage === state.mediaPage) { return; }
@@ -1160,7 +1193,14 @@
             renderMedia(state.mediaTotal, playablePlaylistItems().length);
             focusFirstMediaCard();
         } else {
-            loadMedia().then(focusFirstMediaCard);
+            state.mediaPageChanging = true;
+            elements.pageStatus.textContent = "Loading page " + (nextPage + 1) + "…";
+            loadMedia().then(function () {
+                focusFirstMediaCard();
+                state.mediaPageChanging = false;
+            }, function () {
+                state.mediaPageChanging = false;
+            });
         }
     }
 
@@ -1566,7 +1606,8 @@
 
     function startMusicCollection(shuffle, startItem) {
         var collection = state.musicCollection;
-        if (!collection) { return; }
+        if (!collection || state.collectionStartPending) { return; }
+        state.collectionStartPending = true;
         elements.playPlaylist.disabled = true;
         elements.shufflePlaylist.disabled = true;
         allMusicCollectionItems(collection).then(function (items) {
@@ -1577,6 +1618,7 @@
         }).catch(function (error) {
             showToast(error.message, true);
         }).then(function () {
+            state.collectionStartPending = false;
             elements.playPlaylist.disabled = state.mediaTotal === 0;
             elements.shufflePlaylist.disabled = state.mediaTotal === 0;
         });
@@ -1770,6 +1812,9 @@
             state.captionTrackOrdinal = Number(elements.captionTrack.value);
             if (state.captionsEnabled) { refreshCaptionSelection(); }
         });
+        elements.bassGain.addEventListener("input", updateBassControls);
+        elements.bassGain.addEventListener("change", applyBassSettings);
+        elements.bassEnhancement.addEventListener("change", applyBassSettings);
         [elements.compressorThreshold, elements.compressorRatio, elements.compressorOutputGain,
             elements.compressorCeiling, elements.compressorAttack,
             elements.compressorRelease, elements.compressorKnee].forEach(function (control) {
@@ -1781,6 +1826,51 @@
         elements.compressorVideoToGlobal.addEventListener("click", copyVideoCompressorToGlobal);
         elements.compressorGlobalToVideo.addEventListener("click", copyGlobalCompressorToVideo);
         elements.compressorFollowGlobal.addEventListener("click", followGlobalCompressor);
+    }
+
+    function hlsPlayerConfiguration() {
+        return {
+            // Fluxa's CSP deliberately blocks blob: workers. Running the
+            // small transmux step on the page avoids HLS.js attempting a
+            // worker and then recovering through a lossy fallback path.
+            enableWorker: false,
+            backBufferLength: 60,
+            maxBufferLength: 60,
+            maxMaxBufferLength: 90,
+            liveSyncDurationCount: 3,
+            maxLiveSyncPlaybackRate: 1
+        };
+    }
+
+    function primeTeslaVideoGesture() {
+        if (!isTeslaBrowser || !window.Hls || !window.Hls.isSupported()) { return; }
+        if (navigator.userActivation && !navigator.userActivation.isActive) { return; }
+
+        var media = document.createElement("video");
+        media.controls = false;
+        media.autoplay = false;
+        media.preload = "auto";
+        media.volume = state.volume;
+        media.muted = state.muted;
+        media.className = "player-video pending";
+        media.setAttribute("playsinline", "true");
+        media.fluxaTeslaGestureState = "pending";
+        state.player = media;
+        state.playerAssignedAt = Date.now();
+        elements.stage.appendChild(media);
+
+        state.hls = new window.Hls(hlsPlayerConfiguration());
+        state.hls.attachMedia(media);
+        var attempt = media.play();
+        if (attempt && typeof attempt.then === "function") {
+            attempt.then(function () {
+                media.fluxaTeslaGestureState = "accepted";
+            }).catch(function () {
+                media.fluxaTeslaGestureState = "rejected";
+            });
+        } else {
+            media.fluxaTeslaGestureState = "accepted";
+        }
     }
 
     function openPlayer(mediaId, queueIndex) {
@@ -1806,6 +1896,7 @@
         document.body.style.overflow = "hidden";
         elements.stage.innerHTML = "";
         showTransitionFrame();
+        primeTeslaVideoGesture();
         elements.playerDetails.classList.remove("open");
         elements.playerTitle.textContent = "Loading…";
         elements.playerTechnical.textContent = "Reading stream information";
@@ -1876,7 +1967,9 @@
         if (state.compatibilityStarting || state.compatibilitySession) { return; }
         state.compatibilityStarting = true;
         var requestToken = state.openToken;
-        detachMediaElement();
+        var teslaPrimed = isTeslaBrowser && state.player
+            && typeof state.player.fluxaTeslaGestureState === "string";
+        if (!teslaPrimed) { detachMediaElement(); }
         showTransitionFrame(item);
         elements.stage.setAttribute("aria-busy", "true");
         var selectedCaption = selectedCaptionTrack(item);
@@ -1886,11 +1979,11 @@
             : (item.progress.position_ms || 0);
         var requestBody = {
             start_ms: Math.max(0, Math.round(startMs)),
-            // MPEG-TS avoids browser MediaSource timestamp rejection when an
-            // audio track begins slightly after video at an arbitrary seek.
-            // HLS.js transmuxes it locally, while Samsung/native HLS consumes
-            // the same stream directly.
-            segment_format: "mpegts",
+            // Tesla's Chromium build accepts MPEG-TS through HLS.js but can
+            // advance its clock without presenting audio or video. Give only
+            // that browser fragmented MP4; all existing clients keep their
+            // established MPEG-TS path and identical encode settings.
+            segment_format: isTeslaBrowser ? "fmp4" : "mpegts",
             compressor: {
                 enabled: state.compressorEnabled,
                 threshold_db: state.compressorThreshold,
@@ -1900,6 +1993,10 @@
                 attack_ms: state.compressorAttack,
                 release_ms: state.compressorRelease,
                 knee: state.compressorKnee
+            },
+            bass: {
+                enabled: state.bassEnhancement,
+                gain_db: state.bassGain
             }
         };
         if (state.captionsEnabled && selectedCaption && selectedCaption.kind === "bitmap") {
@@ -1936,7 +2033,10 @@
     }
 
     function attachCompatibilityStream(item, session, shouldResume) {
-        var media = document.createElement("video");
+        var media = isTeslaBrowser && state.player
+                && typeof state.player.fluxaTeslaGestureState === "string"
+            ? state.player : document.createElement("video");
+        var primedHls = media.fluxaTeslaGestureState && state.hls ? state.hls : null;
         var manifest = appUrl(session.manifest_url);
         media.controls = false;
         media.autoplay = false;
@@ -1951,7 +2051,7 @@
         state.playerAssignedAt = Date.now();
         state.pauseReason = "";
         state.lastPlaybackToggleAt = 0;
-        elements.stage.appendChild(media);
+        if (!media.parentNode) { elements.stage.appendChild(media); }
         buildCompatibilityControls(media, item);
         var revealed = false;
         function revealMedia() {
@@ -1968,23 +2068,18 @@
 
         if (window.Hls && window.Hls.isSupported()) {
             var recoveryCount = 0;
-            state.hls = new window.Hls({
-                // Fluxa's CSP deliberately blocks blob: workers. Running the
-                // small transmux step on the page avoids HLS.js attempting a
-                // worker and then recovering through a lossy fallback path.
-                enableWorker: false,
-                backBufferLength: 60,
-                maxBufferLength: 60,
-                maxMaxBufferLength: 90,
-                liveSyncDurationCount: 3,
-                maxLiveSyncPlaybackRate: 1
-            });
-            state.hls.on(window.Hls.Events.MEDIA_ATTACHED, function () {
-                if (state.hls) { state.hls.loadSource(manifest); }
-            });
+            state.hls = primedHls || new window.Hls(hlsPlayerConfiguration());
+            if (!primedHls) {
+                state.hls.on(window.Hls.Events.MEDIA_ATTACHED, function () {
+                    if (state.hls) { state.hls.loadSource(manifest); }
+                });
+            }
             state.hls.on(window.Hls.Events.MANIFEST_PARSED, function () {
                 updatePlaybackControls();
-                if (shouldResume) { resumeMedia(media); }
+                if (shouldResume && media.fluxaTeslaGestureState !== "pending"
+                        && media.fluxaTeslaGestureState !== "accepted") {
+                    resumeMedia(media);
+                }
             });
             state.hls.on(window.Hls.Events.ERROR, function (_event, data) {
                 recordPlaybackEvent("hls_error", media, {
@@ -2008,7 +2103,8 @@
                     showToast("The compatibility stream stopped unexpectedly.", true);
                 }
             });
-            state.hls.attachMedia(media);
+            if (primedHls) { state.hls.loadSource(manifest); }
+            else { state.hls.attachMedia(media); }
             return;
         }
         if (media.canPlayType("application/vnd.apple.mpegurl")) {
@@ -2187,32 +2283,13 @@
         });
         shuffle.addEventListener("click", toggleQueueShuffle);
         bindSinglePlayerAction(repeat, cycleRepeatMode);
-        chapterGrid.addEventListener("click", function () {
-            chapterPopover.hidden = !chapterPopover.hidden;
-            chapterGrid.classList.toggle("active", !chapterPopover.hidden);
-            chapterGrid.setAttribute("aria-expanded", String(!chapterPopover.hidden));
-            if (!chapterPopover.hidden) {
-                highlightCurrentChapter(chapterPopover, originalPlaybackPosition());
-                loadChapterPreviewImages(chapterPopover);
-                if (isTizenTv) {
-                    setTimeout(function () { focusCurrentChapter(chapterPopover); }, 0);
-                } else {
-                    setTimeout(function () {
-                        scrollChapterCardIntoView(chapterPopover.querySelector(".chapter-card.active"));
-                        if (chapterPopover.fluxaRefreshScrollButtons) {
-                            chapterPopover.fluxaRefreshScrollButtons();
-                        }
-                    }, 0);
-                }
-            }
-            revealPlayerControls();
-            schedulePlayerGeometry();
-        });
+        chapterGrid.addEventListener("click", toggleChapterPicker);
         var settingsOpen = elements.playerDetails.classList.contains("open");
         settings.setAttribute("aria-expanded", String(settingsOpen));
         settings.classList.toggle("active", settingsOpen);
         settings.addEventListener("click", function () {
             var open = !elements.playerDetails.classList.contains("open");
+            if (!open) { commitPendingPlayerSettingRanges(); }
             elements.playerDetails.classList.toggle("open", open);
             settings.classList.toggle("active", open);
             settings.setAttribute("aria-expanded", String(open));
@@ -2457,6 +2534,39 @@
         });
     }
 
+    function toggleChapterPicker() {
+        var controls = state.playerControls;
+        if (elements.modal.hidden || !state.player || !controls
+                || !controls.chapterPopover || !controls.chapterGrid
+                || controls.chapterGrid.disabled) {
+            return false;
+        }
+        var popover = controls.chapterPopover;
+        var open = popover.hidden;
+        popover.hidden = !open;
+        controls.chapterGrid.classList.toggle("active", open);
+        controls.chapterGrid.setAttribute("aria-expanded", String(open));
+        if (open) {
+            highlightCurrentChapter(popover, originalPlaybackPosition());
+            loadChapterPreviewImages(popover);
+            if (isTizenTv) {
+                setTimeout(function () { focusCurrentChapter(popover); }, 0);
+            } else {
+                setTimeout(function () {
+                    scrollChapterCardIntoView(popover.querySelector(".chapter-card.active"));
+                    if (popover.fluxaRefreshScrollButtons) {
+                        popover.fluxaRefreshScrollButtons();
+                    }
+                }, 0);
+            }
+        } else if (isTizenTv) {
+            focusElement(controls.chapterGrid);
+        }
+        revealPlayerControls();
+        schedulePlayerGeometry();
+        return true;
+    }
+
     function pollChapterPreview(image, url, attempt) {
         fetch(url, { method: "HEAD", cache: "no-store" }).then(function (response) {
             if (response.status === 200) {
@@ -2659,6 +2769,15 @@
         }, 2000);
     }
 
+    function hidePlayerControls() {
+        if (!elements.playerPanel) { return; }
+        if (state.controlsHideTimer) {
+            clearTimeout(state.controlsHideTimer);
+            state.controlsHideTimer = null;
+        }
+        elements.playerPanel.classList.add("controls-hidden");
+    }
+
     function schedulePlayerGeometry() {
         if (!elements.playerPanel || state.playerGeometryFrame !== null) { return; }
         state.playerGeometryFrame = window.requestAnimationFrame(updatePlayerGeometry);
@@ -2830,6 +2949,26 @@
         elements.compressorGlobalToVideo.hidden = !videoScope;
         elements.compressorFollowGlobal.hidden = !videoScope;
         updateCompressorLabels();
+    }
+
+    function configureBass() {
+        elements.bassEnhancement.checked = state.bassEnhancement;
+        elements.bassGain.value = String(state.bassGain);
+        updateBassControls();
+    }
+
+    function updateBassControls() {
+        elements.bassGainValue.textContent = signedDb(elements.bassGain.value);
+        elements.bassGain.disabled = !elements.bassEnhancement.checked;
+    }
+
+    function applyBassSettings() {
+        state.bassEnhancement = elements.bassEnhancement.checked;
+        state.bassGain = boundedNumber(elements.bassGain.value, 0, 9, 4);
+        setStoredPreference("fluxa-bass-enhancement", state.bassEnhancement ? "yes" : "no");
+        setStoredPreference("fluxa-bass-gain", String(state.bassGain));
+        updateBassControls();
+        restartCompressorStream();
     }
 
     function updateCompressorLabels() {
@@ -3164,6 +3303,10 @@
             hidden: document.hidden,
             client_version: clientVersion,
             tizen_mode: isTizenTv,
+            tesla_browser: isTeslaBrowser,
+            segment_format: state.compatibilitySession
+                ? state.compatibilitySession.segment_format
+                : null,
             player_modal_hidden: elements.modal.hidden,
             player_modal_display: window.getComputedStyle(elements.modal).display
         };
@@ -3382,128 +3525,84 @@
             + "</filter></defs>"
             + "<g transform=\"translate(100 100)\">"
 
+            /* A restrained inner lock: broad, dim pieces establish the depth
+               without competing with the brighter moving rings. */
             + "<g class=\"hud-layer hud-spin hud-ring-1\" fill=\"#176d66\" stroke=\"none\">"
-            + hudBox(16, 30, 4, 78)
-            + hudBox(18, 28, 102, 148)
-            + hudBox(16, 32, 198, 268)
-            + hudBox(20, 28, 292, 338)
+            + hudBox(18, 29, 6, 66)
+            + hudBox(19, 32, 94, 145)
+            + hudBox(16, 28, 193, 255)
+            + hudBox(20, 30, 288, 334)
             + "</g>"
 
-            + "<g class=\"hud-layer hud-spin hud-ring-6\" fill=\"#1a8f8a\" stroke=\"none\">"
-            + hudBox(48, 66, -10, 46)
-            + hudBox(52, 70, 72, 118)
-            + hudBox(46, 64, 156, 228)
-            + hudBox(50, 68, 258, 312)
-            + "</g>"
-
+            /* Three neighboring pieces deliberately vary in width and nearly
+               collide, like tumblers in a ring-puzzle lock. */
             + "<g class=\"hud-layer hud-spin hud-ring-2 hud-lit\" fill=\"#29d3ae\" stroke=\"rgba(164,255,232,.35)\" stroke-width=\".6\">"
-            + hudBox(22, 36, 12, 42)
-            + hudBox(28, 34, 42, 54)
-            + hudBox(28, 44, 58, 96)
-            + hudBox(18, 32, 128, 186)
-            + hudBox(24, 40, 214, 236)
-            + hudBox(20, 38, 268, 318)
+            + hudBox(30, 42, 12, 38)
+            + hudBox(32, 47, 38, 55)
+            + hudBox(27, 40, 59, 95)
+            + hudBox(31, 43, 130, 181)
+            + hudBox(29, 45, 221, 249)
+            + hudBox(34, 44, 286, 328)
             + "</g>"
 
+            /* An unfilled overlay crosses the adjacent rings instead of
+               creating another cleanly divided circular track. */
             + "<g class=\"hud-layer hud-spin hud-ring-4 hud-lit\" fill=\"none\" stroke=\"#8aead4\" stroke-width=\"1.2\">"
-            + hudBox(26, 38, 0, 22)
-            + hudBox(22, 46, 22, 38)
-            + hudBox(34, 50, 86, 124)
-            + hudBox(22, 32, 160, 178)
-            + hudBox(40, 54, 204, 248)
-            + hudBox(30, 42, 288, 334)
+            + hudBox(40, 51, -2, 25)
+            + hudBox(45, 58, 25, 42)
+            + hudBox(39, 54, 88, 130)
+            + hudBox(44, 55, 174, 205)
+            + hudBox(40, 57, 256, 302)
             + "</g>"
 
+            /* A quiet, non-glowing middle layer remains visible when the
+               brighter fading layers disappear. */
             + "<g class=\"hud-layer hud-spin hud-ring-3\" fill=\"#176d66\" stroke=\"#29d3ae\" stroke-width=\".5\">"
-            + hudBox(44, 58, 8, 54)
-            + hudBox(48, 58, 78, 168)
-            + hudBox(42, 60, 188, 214)
-            + hudBox(50, 62, 246, 342)
+            + hudBox(50, 63, 15, 65)
+            + hudBox(54, 68, 96, 137)
+            + hudBox(48, 61, 173, 234)
+            + hudBox(53, 66, 271, 326)
             + "</g>"
 
-            + "<g class=\"hud-layer hud-spin hud-ring-5 hud-lit\" fill=\"#7af0d4\" stroke=\"none\">"
-            + hudBox(36, 42, 18, 36)
-            + hudBox(52, 58, 64, 108)
-            + hudBox(30, 34, 142, 158)
-            + hudBox(62, 70, 196, 222)
-            + hudBox(46, 50, 270, 298)
-            + "</g>"
-
+            /* The outer outline has breathing room; its first two pieces sit
+               side by side, while the remaining gaps stay irregular. */
             + "<g class=\"hud-layer hud-spin hud-ring-7 hud-lit\" fill=\"none\" stroke=\"#bffbef\" stroke-width=\"1.3\">"
-            + hudBox(48, 56, 2, 16)
-            + hudBox(62, 80, 16, 30)
-            + hudBox(24, 32, 48, 86)
-            + hudBox(66, 74, 118, 136)
-            + hudBox(38, 46, 172, 210)
-            + hudBox(78, 86, 238, 252)
-            + hudBox(28, 36, 308, 346)
+            + hudBox(62, 73, 5, 27)
+            + hudBox(65, 80, 27, 44)
+            + hudBox(60, 72, 102, 143)
+            + hudBox(66, 77, 184, 214)
+            + hudBox(61, 75, 244, 291)
+            + hudBox(68, 79, 328, 348)
             + "</g>"
 
+            /* Small outer accents finish the puzzle without forming a dense
+               rim or an oversized band. */
             + "<g class=\"hud-layer hud-spin hud-ring-6 hud-lit\" fill=\"#29d3ae\" stroke=\"rgba(200,255,240,.7)\" stroke-width=\"1\">"
-            + hudBox(72, 86, 6, 34)
-            + hudBox(76, 82, 34, 46)
-            + hudBox(70, 84, 92, 158)
-            + hudBox(74, 88, 182, 198)
-            + hudBox(68, 86, 228, 286)
-            + hudBox(72, 84, 318, 348)
+            + hudBox(76, 84, 18, 31)
+            + hudBox(71, 82, 78, 109)
+            + hudBox(77, 87, 153, 169)
+            + hudBox(69, 81, 224, 251)
+            + hudBox(75, 85, 302, 321)
             + "</g>"
 
-            + "<g class=\"hud-layer hud-spin hud-ring-2 hud-lit\" fill=\"none\" stroke=\"#d7fff4\" stroke-width=\"1.4\">"
-            + hudBox(72, 82, 40, 58)
-            + hudBox(80, 90, 168, 186)
-            + hudBox(64, 76, 210, 236)
-            + hudBox(76, 86, 292, 312)
-            + "</g>"
-
-            + "<g class=\"hud-layer hud-spin hud-ring-1 hud-lit\" fill=\"#9ff5e2\" stroke=\"none\">"
-            + hudBox(82, 88, 12, 24)
-            + hudBox(54, 60, 76, 112)
-            + hudBox(86, 91, 148, 162)
-            + hudBox(50, 55, 248, 278)
-            + "</g>"
-
+            /* T marks stay sparse, independent, and within the box field.
+               There is intentionally no T-only outer ring. */
             + "<g class=\"hud-layer hud-spin hud-tee-1 hud-lit\" fill=\"none\" stroke=\"#d7fff4\" stroke-width=\"1.15\" stroke-opacity=\".38\">"
-            + hudTee(25, 24, 6, 3.2, false)
-            + hudTee(23, 73, 5, 2.8, true)
-            + hudTee(26, 121, 7, 3.4, false)
-            + hudTee(24, 178, 6, 3, true)
-            + hudTee(25, 236, 5.5, 3.1, false)
-            + hudTee(23, 291, 6.5, 3.3, true)
-            + hudTee(26, 338, 5, 2.9, false)
-            + "</g>"
-            + "<g class=\"hud-layer hud-spin hud-tee-2\" fill=\"#176d66\" stroke=\"none\">"
-            + hudTeeSolid(39, 31, 7, 3.4, 1.5, false)
-            + hudTeeSolid(37, 88, 6, 3.1, 1.4, true)
-            + hudTeeSolid(40, 139, 8, 3.6, 1.6, false)
-            + hudTeeSolid(38, 197, 6.5, 3.2, 1.4, true)
-            + hudTeeSolid(39, 254, 7.5, 3.5, 1.5, false)
-            + hudTeeSolid(37, 318, 6, 3, 1.4, true)
+            + hudTee(34, 24, 6, 3.2, false)
+            + hudTee(32, 112, 7, 3.4, true)
+            + hudTee(35, 218, 5.5, 3.1, false)
+            + hudTee(33, 307, 6.5, 3.3, true)
             + "</g>"
             + "<g class=\"hud-layer hud-spin hud-tee-3\" fill=\"none\" stroke=\"#8aead4\" stroke-width=\"1.2\" stroke-opacity=\".32\">"
-            + hudTee(53, 19, 7, 3.6, false)
-            + hudTee(51, 67, 5.5, 3.2, true)
-            + hudTee(54, 114, 8, 3.8, false)
-            + hudTee(52, 171, 6, 3.4, true)
-            + hudTee(53, 228, 7, 3.6, false)
-            + hudTee(51, 281, 5.5, 3.3, true)
-            + hudTee(54, 339, 6.5, 3.5, false)
+            + hudTee(55, 19, 7, 3.6, false)
+            + hudTee(53, 151, 6, 3.4, true)
+            + hudTee(56, 278, 5.5, 3.3, false)
             + "</g>"
             + "<g class=\"hud-layer hud-spin hud-tee-4 hud-lit\" fill=\"#9ff5e2\" stroke=\"none\">"
-            + hudTeeSolid(68, 27, 7, 3.5, 1.5, false)
-            + hudTeeSolid(66, 81, 6, 3.1, 1.4, true)
-            + hudTeeSolid(69, 146, 8, 3.7, 1.6, false)
-            + hudTeeSolid(67, 203, 6.5, 3.3, 1.4, true)
-            + hudTeeSolid(68, 262, 7.5, 3.6, 1.5, false)
-            + hudTeeSolid(66, 327, 6, 3, 1.4, true)
-            + "</g>"
-            + "<g class=\"hud-layer hud-spin hud-tee-5 hud-lit\" fill=\"none\" stroke=\"#e7fff8\" stroke-width=\"1.2\" stroke-opacity=\".42\">"
-            + hudTee(82, 38, 6, 3.4, false)
-            + hudTee(80, 86, 5.5, 3.6, true)
-            + hudTee(83, 137, 7, 3.2, false)
-            + hudTee(81, 191, 6, 3.5, true)
-            + hudTee(82, 242, 6.5, 3.7, false)
-            + hudTee(80, 296, 5.5, 3.3, true)
-            + hudTee(83, 349, 6, 3.4, false)
+            + hudTeeSolid(71, 37, 7, 3.5, 1.5, false)
+            + hudTeeSolid(69, 126, 6, 3.1, 1.4, true)
+            + hudTeeSolid(72, 239, 8, 3.7, 1.6, false)
+            + hudTeeSolid(70, 334, 6.5, 3.3, 1.4, true)
             + "</g>"
 
             + "<g class=\"hud-layer hud-lit\" fill=\"none\" stroke=\"#29d3ae\">"
@@ -3516,50 +3615,10 @@
     function createFluxaLoader() {
         var wrap = document.createElement("div");
         var loader = document.createElement("div");
-        var switcher = document.createElement("div");
-        var originalButton = document.createElement("button");
-        var trialButton = document.createElement("button");
-        var originalMarkup = "<i></i><i></i><i></i><span></span>"
-            + "<img src=\"" + appUrl("/favicon.svg") + "\" alt=\"\">";
-        var useTrial = false;
         wrap.className = "fluxa-loader-wrap";
-        switcher.className = "fluxa-loader-switch";
-        originalButton.type = "button";
-        originalButton.className = "focusable";
-        originalButton.setAttribute("data-focusable", "true");
-        originalButton.textContent = "Original";
-        trialButton.type = "button";
-        trialButton.className = "focusable";
-        trialButton.setAttribute("data-focusable", "true");
-        trialButton.textContent = "New";
-        function applySpinner() {
-            if (useTrial) {
-                loader.className = "fluxa-loader fluxa-loader-hud";
-                loader.innerHTML = hudMarkup();
-            } else {
-                loader.className = "fluxa-loader fluxa-loader-original";
-                loader.innerHTML = originalMarkup;
-            }
-            originalButton.classList.toggle("is-active", !useTrial);
-            trialButton.classList.toggle("is-active", useTrial);
-        }
-        originalButton.addEventListener("click", function (event) {
-            event.preventDefault();
-            event.stopPropagation();
-            useTrial = false;
-            applySpinner();
-        });
-        trialButton.addEventListener("click", function (event) {
-            event.preventDefault();
-            event.stopPropagation();
-            useTrial = true;
-            applySpinner();
-        });
-        applySpinner();
-        switcher.appendChild(originalButton);
-        switcher.appendChild(trialButton);
+        loader.className = "fluxa-loader fluxa-loader-hud";
+        loader.innerHTML = hudMarkup();
         wrap.appendChild(loader);
-        wrap.appendChild(switcher);
         return wrap;
     }
 
@@ -3694,6 +3753,15 @@
             if (action === lastMediaAction && now - lastMediaActionAt < 250) { return true; }
             lastMediaAction = action;
             lastMediaActionAt = now;
+            if (action === "next-page" || action === "previous-page") {
+                if (!isTizenTv || !elements.modal.hidden || elements.pagination.hidden) { return false; }
+                changeMediaPage(action === "next-page" ? 1 : -1);
+                return true;
+            }
+            if (action === "chapters") { return toggleChapterPicker(); }
+            if (elements.modal.hidden && (action === "play" || action === "toggle")) {
+                return playAvailableCollectionFromRemote();
+            }
             if (elements.modal.hidden || !state.player) { return false; }
             if (action === "toggle") {
                 toggleMediaPlayback(state.player, "tv-shell-toggle");
@@ -3714,7 +3782,14 @@
         });
         document.addEventListener("keydown", function (event) {
             var key = event.key;
-            if (!elements.modal.hidden) { revealPlayerControls(); }
+            var controlsWereHidden = !elements.modal.hidden
+                && elements.playerPanel.classList.contains("controls-hidden");
+            var isBackKey = event.keyCode === 10009 || key === "Escape";
+            if (!elements.modal.hidden && !isBackKey) { revealPlayerControls(); }
+            if (handleTvPageRemoteKey(event)) {
+                event.preventDefault();
+                return;
+            }
             if (handleMediaRemoteKey(event)) {
                 event.preventDefault();
                 return;
@@ -3727,6 +3802,7 @@
                 }
                 if (!elements.modal.hidden) {
                     if (elements.playerDetails.classList.contains("open") && state.playerControls) {
+                        commitPendingPlayerSettingRanges();
                         elements.playerDetails.classList.remove("open");
                         state.playerControls.settings.classList.remove("active");
                         state.playerControls.settings.setAttribute("aria-expanded", "false");
@@ -3737,6 +3813,8 @@
                         state.playerControls.chapterGrid.classList.remove("active");
                         state.playerControls.chapterGrid.setAttribute("aria-expanded", "false");
                         focusElement(state.playerControls.chapterGrid);
+                    } else if (!controlsWereHidden) {
+                        hidePlayerControls();
                     } else {
                         closePlayer();
                     }
@@ -3750,6 +3828,10 @@
                 || key === " " || key === "Spacebar" || event.code === "Space";
             if ((isTizenTv || !elements.modal.hidden) && activateKey) {
                 if (event.repeat) {
+                    event.preventDefault();
+                    return;
+                }
+                if (!elements.modal.hidden && controlsWereHidden) {
                     event.preventDefault();
                     return;
                 }
@@ -3800,6 +3882,19 @@
         });
     }
 
+    function playAvailableCollectionFromRemote() {
+        if (!isTizenTv || !elements.modal.hidden || elements.playlistActions.hidden) {
+            return false;
+        }
+        if (state.fredplayerOnly && state.musicCollection) {
+            startMusicCollection(document.activeElement === elements.shufflePlaylist);
+            return true;
+        }
+        if (state.playlist === null) { return false; }
+        startActiveCollection(document.activeElement === elements.shufflePlaylist);
+        return true;
+    }
+
     function registerTizenRemoteKeys() {
         if (isTizenTv) { document.body.classList.add("tizen-tv"); }
         function reportBrandKeys(eventName, keys, reason) {
@@ -3839,7 +3934,8 @@
         }
         [
             "MediaPlay", "MediaPause", "MediaStop",
-            "MediaRewind", "MediaFastForward", "MediaTrackPrevious", "MediaTrackNext"
+            "MediaRewind", "MediaFastForward", "MediaTrackPrevious", "MediaTrackNext",
+            "ChannelUp", "ChannelDown", "Guide"
         ].forEach(function (name) {
             try { window.tizen.tvinputdevice.registerKey(name); }
             catch (_error) {}
@@ -3851,9 +3947,26 @@
         catch (_error) {}
     }
 
+    function handleTvPageRemoteKey(event) {
+        if (!isTizenTv || !elements.modal.hidden || elements.pagination.hidden) { return false; }
+        if (event.keyCode === 427) {
+            changeMediaPage(1);
+            return true;
+        }
+        if (event.keyCode === 428) {
+            changeMediaPage(-1);
+            return true;
+        }
+        return false;
+    }
+
     function handleMediaRemoteKey(event) {
-        if (elements.modal.hidden || !state.player) { return false; }
         var code = event.keyCode;
+        if (code === 458) { return toggleChapterPicker(); }
+        if (elements.modal.hidden || !state.player) {
+            if (code === 10252 || code === 415) { return playAvailableCollectionFromRemote(); }
+            return false;
+        }
         if (code === 10252) {
             toggleMediaPlayback(state.player, "media-key-toggle");
         } else if (code === 415) {
@@ -3881,11 +3994,15 @@
         if (movePlayerSettingsFocus(direction)) { return true; }
         if (movePlayerControlFocus(direction)) { return true; }
         if (moveGridFocus(direction)) { return true; }
+        if (moveSidebarFocus(direction)) { return true; }
         var nodes = document.querySelectorAll("[data-focusable='true']:not([disabled])");
         var focusables = [];
         var i;
         for (i = 0; i < nodes.length; i += 1) {
-            if (isVisible(nodes[i])) { focusables.push(nodes[i]); }
+            if (isVisible(nodes[i]) && !(isTizenTv && elements.main.contains(document.activeElement)
+                    && direction !== "ArrowLeft" && elements.sidebar.contains(nodes[i]))) {
+                focusables.push(nodes[i]);
+            }
         }
         if (!focusables.length) { return false; }
         var current = document.activeElement;
@@ -3893,26 +4010,45 @@
             focusables[0].focus();
             return true;
         }
-        var source = centerOf(current.getBoundingClientRect());
-        var best = null;
-        var bestScore = Infinity;
-        focusables.forEach(function (candidate) {
-            if (candidate === current) { return; }
-            var target = centerOf(candidate.getBoundingClientRect());
-            var dx = target.x - source.x;
-            var dy = target.y - source.y;
-            var primary;
-            var secondary;
-            if (direction === "ArrowRight" && dx > 2) { primary = dx; secondary = Math.abs(dy); }
-            else if (direction === "ArrowLeft" && dx < -2) { primary = -dx; secondary = Math.abs(dy); }
-            else if (direction === "ArrowDown" && dy > 2) { primary = dy; secondary = Math.abs(dx); }
-            else if (direction === "ArrowUp" && dy < -2) { primary = -dy; secondary = Math.abs(dx); }
-            else { return; }
-            var score = primary + secondary * 2.2;
-            if (score < bestScore) { bestScore = score; best = candidate; }
-        });
+        var best = findDirectionalCandidate(current, focusables, direction, false);
         if (best) { focusElement(best); return true; }
         return false;
+    }
+
+    function findDirectionalCandidate(current, candidates, direction, requireCrossAxisOverlap) {
+        var source = current.getBoundingClientRect();
+        var sourceCenter = centerOf(source);
+        var best = null;
+        var bestScore = Infinity;
+        candidates.forEach(function (candidate) {
+            if (candidate === current || !isVisible(candidate)) { return; }
+            var target = candidate.getBoundingClientRect();
+            var targetCenter = centerOf(target);
+            var primary;
+            var crossGap;
+            var centerDrift;
+            if (direction === "ArrowRight" || direction === "ArrowLeft") {
+                if (direction === "ArrowRight" && targetCenter.x <= sourceCenter.x + 2) { return; }
+                if (direction === "ArrowLeft" && targetCenter.x >= sourceCenter.x - 2) { return; }
+                primary = direction === "ArrowRight"
+                    ? Math.max(0, target.left - source.right)
+                    : Math.max(0, source.left - target.right);
+                crossGap = Math.max(0, target.top - source.bottom, source.top - target.bottom);
+                centerDrift = Math.abs(targetCenter.y - sourceCenter.y);
+            } else {
+                if (direction === "ArrowDown" && targetCenter.y <= sourceCenter.y + 2) { return; }
+                if (direction === "ArrowUp" && targetCenter.y >= sourceCenter.y - 2) { return; }
+                primary = direction === "ArrowDown"
+                    ? Math.max(0, target.top - source.bottom)
+                    : Math.max(0, source.top - target.bottom);
+                crossGap = Math.max(0, target.left - source.right, source.left - target.right);
+                centerDrift = Math.abs(targetCenter.x - sourceCenter.x);
+            }
+            if (requireCrossAxisOverlap && crossGap > 0) { return; }
+            var score = primary * 3 + crossGap * 12 + centerDrift * 0.2;
+            if (score < bestScore) { bestScore = score; best = candidate; }
+        });
+        return best;
     }
 
     function moveChapterFocus(direction) {
@@ -3970,10 +4106,12 @@
             return true;
         }
         if (direction === "ArrowDown" && index < focusables.length - 1) {
+            commitRemoteSettingRange(current);
             focusElement(focusables[index + 1]);
             return true;
         }
         if (direction === "ArrowUp" && index > 0) {
+            commitRemoteSettingRange(current);
             focusElement(focusables[index - 1]);
             return true;
         }
@@ -3998,7 +4136,24 @@
         var value = Math.max(minimum, Math.min(maximum, Number(control.value) + step * direction));
         control.value = String(value);
         control.dispatchEvent(new Event("input", { bubbles: true }));
+        if (elements.playerDetails.contains(control)) {
+            control.dataset.fluxaRemoteDirty = "true";
+        } else {
+            control.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+    }
+
+    function commitRemoteSettingRange(control) {
+        if (!control || control.dataset.fluxaRemoteDirty !== "true") { return; }
+        delete control.dataset.fluxaRemoteDirty;
         control.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    function commitPendingPlayerSettingRanges() {
+        var ranges = elements.playerDetails.querySelectorAll(
+            "input[type='range'][data-fluxa-remote-dirty='true']"
+        );
+        Array.prototype.forEach.call(ranges, commitRemoteSettingRange);
     }
 
     function findHorizontalSetting(focusables, current, direction) {
@@ -4091,22 +4246,73 @@
             return false;
         }
         var nodes = elements.grid.querySelectorAll(".media-card:not([disabled])");
-        var cards = Array.prototype.slice.call(nodes);
-        var index = cards.indexOf(document.activeElement);
-        if (index < 0 || !cards.length) { return false; }
-        var columns = 1;
-        var firstTop = cards[0].offsetTop;
-        while (columns < cards.length && cards[columns].offsetTop === firstTop) {
-            columns += 1;
+        var cards = Array.prototype.slice.call(nodes).filter(isVisible);
+        var current = document.activeElement;
+        if (cards.indexOf(current) < 0 || !cards.length) { return false; }
+        var horizontal = direction === "ArrowLeft" || direction === "ArrowRight";
+        var target = findDirectionalCandidate(current, cards, direction, horizontal);
+        if (target) {
+            focusElement(target);
+            return true;
         }
-        var target = index;
-        if (direction === "ArrowLeft" && index > 0) { target = index - 1; }
-        else if (direction === "ArrowRight" && index < cards.length - 1) { target = index + 1; }
-        else if (direction === "ArrowUp" && index >= columns) { target = index - columns; }
-        else if (direction === "ArrowDown" && index + columns < cards.length) { target = index + columns; }
-        else { return false; }
-        focusElement(cards[target]);
+
+        if (direction === "ArrowLeft") {
+            var sidebarNodes = elements.sidebar.querySelectorAll("[data-focusable='true']:not([disabled])");
+            target = closestByVerticalPosition(current, Array.prototype.slice.call(sidebarNodes));
+        } else if (direction === "ArrowRight" && elements.grid.classList.contains("list-view")) {
+            target = closestByHorizontalPosition(current, collectionHeaderTargets());
+        } else if (direction === "ArrowUp") {
+            target = closestByHorizontalPosition(current, collectionHeaderTargets());
+        } else if (direction === "ArrowDown" && !elements.pagination.hidden) {
+            target = !elements.nextPage.disabled ? elements.nextPage : elements.previousPage;
+        }
+        if (target && isVisible(target) && !target.disabled) { focusElement(target); }
+        // Consume edge movement so left/right never wrap into another row or
+        // jump to an unrelated control on the far side of the screen.
         return true;
+    }
+
+    function collectionHeaderTargets() {
+        var selector = ".section-heading-actions [data-focusable='true']:not([disabled]),"
+            + "#music-browser-tabs [data-focusable='true']:not([disabled]),"
+            + "#folder-nav [data-focusable='true']:not([disabled])";
+        return Array.prototype.slice.call(elements.main.querySelectorAll(selector)).filter(isVisible);
+    }
+
+    function closestByHorizontalPosition(current, candidates) {
+        var sourceX = centerOf(current.getBoundingClientRect()).x;
+        var best = null;
+        var bestDistance = Infinity;
+        candidates.forEach(function (candidate) {
+            if (!isVisible(candidate)) { return; }
+            var distance = Math.abs(centerOf(candidate.getBoundingClientRect()).x - sourceX);
+            if (distance < bestDistance) { bestDistance = distance; best = candidate; }
+        });
+        return best;
+    }
+
+    function moveSidebarFocus(direction) {
+        if (!isTizenTv || !elements.sidebar.contains(document.activeElement)) { return false; }
+        if (direction === "ArrowLeft") { return true; }
+        if (direction !== "ArrowRight") { return false; }
+        var cards = Array.prototype.slice.call(
+            elements.grid.querySelectorAll(".media-card:not([disabled])")
+        );
+        var target = closestByVerticalPosition(document.activeElement, cards);
+        if (target) { focusElement(target); }
+        return true;
+    }
+
+    function closestByVerticalPosition(current, candidates) {
+        var sourceY = centerOf(current.getBoundingClientRect()).y;
+        var best = null;
+        var bestDistance = Infinity;
+        candidates.forEach(function (candidate) {
+            if (!isVisible(candidate)) { return; }
+            var distance = Math.abs(centerOf(candidate.getBoundingClientRect()).y - sourceY);
+            if (distance < bestDistance) { bestDistance = distance; best = candidate; }
+        });
+        return best;
     }
 
     function focusElement(element) {

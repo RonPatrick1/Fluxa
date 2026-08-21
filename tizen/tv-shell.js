@@ -26,7 +26,7 @@
                 event: eventName,
                 hls_detail: typeof detail === "string" ? detail : JSON.stringify(detail || []),
                 hls_reason: reason || "",
-                client_version: "tizen-launcher-1.0.13",
+                client_version: "tizen-launcher-1.0.16",
                 tizen_mode: true
             }));
         } catch (_error) {}
@@ -41,7 +41,9 @@
             ["MediaPlayPause", "toggle", 10252], ["MediaPlay", "play", 415],
             ["MediaPause", "pause", 19], ["MediaStop", "stop", 413],
             ["MediaRewind", "rewind", 412], ["MediaFastForward", "fast-forward", 417],
-            ["MediaTrackPrevious", "previous", 10232], ["MediaTrackNext", "next", 10233]
+            ["MediaTrackPrevious", "previous", 10232], ["MediaTrackNext", "next", 10233],
+            ["ChannelUp", "next-page", 427], ["ChannelDown", "previous-page", 428],
+            ["Guide", "chapters", 458]
         ];
         mediaKeys.forEach(function (entry) {
             var name = entry[0];
@@ -86,6 +88,8 @@
     document.addEventListener("keydown", function (event) {
         var action = mediaKeyActions[event.keyCode];
         if (!action) { return; }
+        event.preventDefault();
+        event.stopPropagation();
         report("tv_launcher_media_key", [], action + " code=" + event.keyCode);
         forwardMediaAction(action);
     }, true);
@@ -118,7 +122,8 @@
     function loadFluxa(url) {
         if (selectedUrl) { return; }
         selectedUrl = url;
-        appFrame.src = url + (url.indexOf("?") === -1 ? "?" : "&") + "platform=tizen&tv_shell=1";
+        appFrame.src = url + (url.indexOf("?") === -1 ? "?" : "&")
+            + "platform=tizen&tv_shell=1&tv_build=1.0.16";
     }
 
     if (introVideo) {

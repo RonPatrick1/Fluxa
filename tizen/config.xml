@@ -2,7 +2,7 @@
 <widget xmlns="http://www.w3.org/ns/widgets"
         xmlns:tizen="http://tizen.org/ns/widgets"
         id="https://patrick-lamphier.com/fluxa/tv"
-        version="1.0.13"
+        version="1.0.16"
         viewmodes="maximized">
     <tizen:application id="FluxaTV001.Fluxa" package="FluxaTV001" required_version="3.0"/>
     <content src="index.html"/>

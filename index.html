@@ -10,7 +10,7 @@
     <link rel="mask-icon" href="safari-pinned-tab.svg?v=20260815-01" color="#29d3ae">
     <link rel="manifest" href="site.webmanifest?v=20260815-01">
     <title>Fluxa — Local media, beautifully controlled</title>
-    <link rel="stylesheet" href="style.css?v=20260819-26">
+    <link rel="stylesheet" href="style.css?v=20260820-27">
 </head>
 <body class="app-booting">
     <header class="topbar">
@@ -178,6 +178,19 @@
                         </div>
                         <button id="analyze-button" class="secondary-button focusable" data-focusable="true">Build precise map</button>
                     </div>
+                    <div class="bass-card">
+                        <p class="eyebrow">SOUND ENHANCEMENT</p>
+                        <label class="setting-toggle" for="bass-enhancement">
+                            <input id="bass-enhancement" class="focusable" data-focusable="true" type="checkbox">
+                            <span>Bass enhancement</span>
+                        </label>
+                        <label class="compressor-control" for="bass-gain">
+                            <span>Subwoofer weight</span>
+                            <output id="bass-gain-value">+4 dB</output>
+                            <input id="bass-gain" class="focusable" data-focusable="true" type="range" min="0" max="9" step="0.5" value="4">
+                        </label>
+                        <p class="compressor-note">Adds low-frequency weight for music and video while Fluxa's limiter protects the output.</p>
+                    </div>
                     <div class="compressor-card">
                         <p class="eyebrow">SPIKE COMPRESSOR</p>
                         <label class="setting-toggle" for="compressor-enabled">
@@ -256,6 +269,6 @@
     </div>
     <script src="vendor/hls.min.js"></script>
     <script src="tv-input.js?v=20260813-01"></script>
-    <script src="script.js?v=20260819-26"></script>
+    <script src="script.js?v=20260820-35"></script>
 </body>
 </html>
