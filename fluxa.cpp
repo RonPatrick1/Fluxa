@@ -393,6 +393,7 @@ public:
                 path TEXT NOT NULL UNIQUE, relative_path TEXT NOT NULL, file_name TEXT NOT NULL, title TEXT NOT NULL,
                 sort_title TEXT NOT NULL, media_type TEXT NOT NULL CHECK(media_type IN ('video','audio')),
                 extension TEXT NOT NULL, size_bytes INTEGER NOT NULL, modified_ns INTEGER NOT NULL,
+                file_device INTEGER, file_inode INTEGER,
                 available INTEGER NOT NULL DEFAULT 1, last_seen_scan TEXT NOT NULL, probe_status TEXT NOT NULL DEFAULT 'pending',
                 probe_error TEXT, duration_ms INTEGER, container TEXT, video_codec TEXT, width INTEGER, height INTEGER,
                 audio_codec TEXT, audio_channels INTEGER, audio_tracks INTEGER, subtitle_tracks INTEGER,
@@ -451,6 +452,13 @@ public:
         if (!has_column("media_compressor_settings", "output_gain_db")) {
             execute("ALTER TABLE media_compressor_settings ADD COLUMN output_gain_db REAL NOT NULL DEFAULT 9");
         }
+        if (!has_column("media", "file_device")) {
+            execute("ALTER TABLE media ADD COLUMN file_device INTEGER");
+        }
+        if (!has_column("media", "file_inode")) {
+            execute("ALTER TABLE media ADD COLUMN file_inode INTEGER");
+        }
+        execute("CREATE INDEX IF NOT EXISTS media_file_identity_idx ON media(library_id,file_device,file_inode)");
     }
 
     ~Database() { if (db_) sqlite3_close(db_); }
@@ -1964,7 +1972,7 @@ json FluxaApp::scan() {
     for (const auto& library : config_.libraries) {
         auto started = std::chrono::steady_clock::now();
         std::string token = std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + "-" + std::to_string(::getpid());
-        std::int64_t discovered = 0, added = 0, changed = 0, skipped = 0, unavailable = 0;
+        std::int64_t discovered = 0, added = 0, changed = 0, renamed = 0, skipped = 0, unavailable = 0;
         std::optional<std::string> scan_error;
         if (!fs::is_directory(library.path)) {
             scan_error = "Library folder is unavailable: " + library.path.string();
@@ -1972,7 +1980,7 @@ json FluxaApp::scan() {
         } else {
             struct Entry {
                 fs::path path; std::string relative, file_name, title, sort_title, media_type, extension;
-                std::int64_t size{}, modified_ns{}; std::optional<std::string> show;
+                std::int64_t size{}, modified_ns{}, file_device{}, file_inode{}; std::optional<std::string> show;
                 std::optional<int> season, episode; bool parsed_title{};
             };
             std::vector<Entry> entries;
@@ -2005,6 +2013,8 @@ json FluxaApp::scan() {
                 auto modified = iterator->last_write_time(error).time_since_epoch().count();
                 auto relative = fs::relative(path, library.path, error).string();
                 if (error) { ++skipped; error.clear(); iterator.increment(error); continue; }
+                struct stat file_status{};
+                if (::stat(path.c_str(), &file_status) != 0) { ++skipped; iterator.increment(error); continue; }
                 auto stem = path.stem().string();
                 auto episode = episode_info(stem);
                 auto title = episode.title.value_or(clean_title(stem));
@@ -2021,7 +2031,9 @@ json FluxaApp::scan() {
                     }
                 }
                 entries.push_back({path, relative, path.filename().string(), title, sort_key(title), media_type, extension,
-                                   size, static_cast<std::int64_t>(modified), show, episode.season, episode.episode, episode.title.has_value()});
+                                   size, static_cast<std::int64_t>(modified), static_cast<std::int64_t>(file_status.st_dev),
+                                   static_cast<std::int64_t>(file_status.st_ino), show, episode.season, episode.episode,
+                                   episode.title.has_value()});
                 ++discovered;
                 iterator.increment(error);
             }
@@ -2032,27 +2044,64 @@ json FluxaApp::scan() {
                     int library_id = number_or<int>(library_row, "id");
                     for (const auto& entry : entries) {
                         auto existing = raw_one(db, "SELECT id,size_bytes,modified_ns FROM media WHERE path=?", {entry.path.string()});
+                        bool was_renamed = false;
+                        if (existing.is_null()) {
+                            auto missing_candidate = [](const json& candidates) {
+                                json match = nullptr;
+                                int count = 0;
+                                for (const auto& candidate : candidates) {
+                                    std::error_code candidate_error;
+                                    if (!fs::is_regular_file(string_or(candidate, "path"), candidate_error)) {
+                                        match = candidate;
+                                        ++count;
+                                    }
+                                }
+                                return count == 1 ? match : json(nullptr);
+                            };
+                            auto candidate = missing_candidate(raw_query(db, R"SQL(
+                                SELECT id,path,size_bytes,modified_ns FROM media
+                                WHERE library_id=? AND media_type=? AND file_device=? AND file_inode=? AND path!=?)SQL",
+                                {library_id, entry.media_type, entry.file_device, entry.file_inode, entry.path.string()}));
+                            if (candidate.is_null()) {
+                                candidate = missing_candidate(raw_query(db, R"SQL(
+                                    SELECT id,path,size_bytes,modified_ns FROM media
+                                    WHERE library_id=? AND media_type=? AND size_bytes=? AND modified_ns=? AND path!=?)SQL",
+                                    {library_id, entry.media_type, entry.size, entry.modified_ns, entry.path.string()}));
+                            }
+                            if (!candidate.is_null()) {
+                                raw_execute(db, "UPDATE media SET path=? WHERE id=?",
+                                            {entry.path.string(), number_or<std::int64_t>(candidate, "id")});
+                                existing = candidate;
+                                was_renamed = true;
+                                ++renamed;
+                            }
+                        }
                         bool is_changed = !existing.is_null() &&
                             (number_or<std::int64_t>(existing, "size_bytes") != entry.size || number_or<std::int64_t>(existing, "modified_ns") != entry.modified_ns);
                         json values = {library_id, entry.path.string(), entry.relative, entry.file_name, entry.title, entry.sort_title,
-                                       entry.media_type, entry.extension, entry.size, entry.modified_ns, token,
+                                       entry.media_type, entry.extension, entry.size, entry.modified_ns, entry.file_device, entry.file_inode, token,
                                        entry.show ? json(*entry.show) : json(nullptr), entry.season ? json(*entry.season) : json(nullptr),
                                        entry.episode ? json(*entry.episode) : json(nullptr), entry.parsed_title, entry.parsed_title};
                         raw_execute(db, R"SQL(INSERT INTO media(library_id,path,relative_path,file_name,title,sort_title,media_type,extension,
-                            size_bytes,modified_ns,available,last_seen_scan,show_title,season_number,episode_number)
-                            VALUES(?,?,?,?,?,?,?,?,?,?,1,?,?,?,?) ON CONFLICT(path) DO UPDATE SET
+                            size_bytes,modified_ns,file_device,file_inode,available,last_seen_scan,show_title,season_number,episode_number)
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?) ON CONFLICT(path) DO UPDATE SET
                             library_id=excluded.library_id,relative_path=excluded.relative_path,file_name=excluded.file_name,
                             title=CASE WHEN ?=1 THEN excluded.title WHEN media.probe_status='done' AND media.size_bytes=excluded.size_bytes
                                 AND media.modified_ns=excluded.modified_ns AND media.title NOT GLOB '[0-9][0-9][0-9]-S*' THEN media.title ELSE excluded.title END,
                             sort_title=CASE WHEN ?=1 THEN excluded.sort_title WHEN media.probe_status='done' AND media.size_bytes=excluded.size_bytes
                                 AND media.modified_ns=excluded.modified_ns AND media.title NOT GLOB '[0-9][0-9][0-9]-S*' THEN media.sort_title ELSE excluded.sort_title END,
                             media_type=excluded.media_type,extension=excluded.extension,size_bytes=excluded.size_bytes,modified_ns=excluded.modified_ns,
+                            file_device=excluded.file_device,file_inode=excluded.file_inode,
                             available=1,last_seen_scan=excluded.last_seen_scan,
                             probe_status=CASE WHEN media.size_bytes!=excluded.size_bytes OR media.modified_ns!=excluded.modified_ns THEN 'pending' ELSE media.probe_status END,
                             probe_error=CASE WHEN media.size_bytes!=excluded.size_bytes OR media.modified_ns!=excluded.modified_ns THEN NULL ELSE media.probe_error END,
                             show_title=CASE WHEN media.show_title IS NULL OR media.show_title NOT GLOB '*[^0-9]*' THEN excluded.show_title ELSE media.show_title END,
                             season_number=COALESCE(media.season_number,excluded.season_number),episode_number=COALESCE(media.episode_number,excluded.episode_number),
                             updated_at=CURRENT_TIMESTAMP)SQL", values);
+                        if (was_renamed) {
+                            raw_execute(db, "UPDATE playlist_items SET source_path=?,source_title=? WHERE media_id=?",
+                                        {entry.path.string(), entry.title, number_or<std::int64_t>(existing, "id")});
+                        }
                         if (existing.is_null()) ++added;
                         else if (is_changed) {
                             ++changed;
@@ -2069,7 +2118,7 @@ json FluxaApp::scan() {
             }
         }
         auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-        results.push_back({{"library", library.name}, {"discovered", discovered}, {"added", added}, {"changed", changed},
+        results.push_back({{"library", library.name}, {"discovered", discovered}, {"added", added}, {"changed", changed}, {"renamed", renamed},
                            {"unavailable", unavailable}, {"skipped", skipped}, {"elapsed_seconds", elapsed},
                            {"error", scan_error ? json(*scan_error) : json(nullptr)}});
     }
@@ -2406,11 +2455,13 @@ bool FluxaApp::redeem_fredplayer_grant(const std::string& grant) {
 
 std::string FluxaApp::fredplayer_launch_ticket(const json& request) {
     auto track_path = request.value("track_path", "");
+    auto playlist_name = request.value("playlist_name", "");
     auto return_url = request.value("return_url", "");
     auto track_paths = request.value("track_paths", json::array());
     if (!config_.fredplayer_artwork.enabled || return_url.empty() || return_url.size() > 4096 ||
-        (!track_paths.is_array() || track_paths.size() > 2000) ||
-        (track_path.empty() && track_paths.empty())) {
+        playlist_name.size() > 500 ||
+        (!track_paths.is_array() || track_paths.size() > 10000) ||
+        (track_path.empty() && track_paths.empty() && playlist_name.empty())) {
         throw ApiError(400, "Invalid FredPlayer launch request");
     }
     for (const auto& path : track_paths) {
@@ -2423,7 +2474,7 @@ std::string FluxaApp::fredplayer_launch_ticket(const json& request) {
     client.set_connection_timeout(2, 0);
     client.set_read_timeout(5, 0);
     httplib::Headers headers{{"Authorization", "Bearer " + config_.fredplayer_artwork.auth_token}};
-    json launch{{"trackPath", track_path}, {"trackPaths", track_paths},
+    json launch{{"trackPath", track_path}, {"trackPaths", track_paths}, {"playlistName", playlist_name},
         {"sourceName", request.value("source_name", "")},
         {"sourceKind", request.value("source_kind", "Queue")},
         {"shuffle", request.value("shuffle", false)},
@@ -3442,6 +3493,7 @@ int main(int argc, char** argv) {
             for (const auto& result : results) {
                 std::cout << result.value("library", "") << ": " << result.value("discovered", 0) << " found, "
                           << result.value("added", 0) << " added, " << result.value("changed", 0) << " changed, "
+                          << result.value("renamed", 0) << " renamed, "
                           << result.value("unavailable", 0) << " unavailable, " << result.value("skipped", 0) << " skipped";
                 if (!result["error"].is_null()) std::cout << " (error=" << result["error"].get<std::string>() << ')';
                 std::cout << '\n';

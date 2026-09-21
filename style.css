@@ -764,28 +764,69 @@ button {
 }
 
 .tizen-tv .card-title {
-    font-size: 18px;
+    color: #f0f7f6;
+    font-size: 20px;
+    font-weight: 800;
 }
 
 .tizen-tv .card-meta,
 .tizen-tv .media-kind {
-    font-size: 14px;
+    font-size: 16px;
+}
+
+.tizen-tv .card-meta {
+    color: #91a6ac;
+    font-weight: 600;
 }
 
 .tizen-tv .nav-item {
     min-height: 50px;
-    font-size: 17px;
+    font-size: 19px;
+    font-weight: 700;
 }
 
 .tizen-tv .nav-label,
-.tizen-tv .eyebrow { font-size: 13px; }
+.tizen-tv .eyebrow { font-size: 15px; }
 .tizen-tv .section-heading h2 { font-size: 31px; }
-.tizen-tv .result-count { font-size: 15px; }
+.tizen-tv .result-count { font-size: 17px; }
 .tizen-tv .primary-button.compact,
-.tizen-tv .secondary-button.compact { font-size: 14px; }
-.tizen-tv .search-box input { font-size: 17px; }
-.tizen-tv .brand-name { font-size: 27px; }
+.tizen-tv .secondary-button.compact { font-size: 16px; }
+.tizen-tv .search-box input { font-size: 19px; }
+.tizen-tv .brand-name { font-size: 29px; }
 .tizen-tv .view-button { width: 44px; height: 42px; font-size: 23px; }
+
+/* TV focus is deliberately drawn outside the controls. Outlines and shadows
+   make the selected item obvious from across the room without changing the
+   grid, thumbnail, or control dimensions. */
+.tizen-tv [data-focusable="true"]:focus {
+    outline: 3px solid #59efd0;
+    outline-offset: 3px;
+    box-shadow: 0 0 0 2px rgba(2, 9, 11, 0.92), 0 0 22px rgba(35, 213, 173, 0.72);
+}
+
+.tizen-tv .media-card:focus {
+    border-radius: 15px;
+    background: rgba(24, 69, 65, 0.72);
+    outline-width: 4px;
+    outline-offset: 4px;
+}
+
+.tizen-tv .media-card:focus .poster {
+    border-color: #baffef;
+    outline: 0;
+    transform: none;
+}
+
+.tizen-tv .media-card:focus .card-title,
+.tizen-tv .media-card:focus .card-meta {
+    color: #fff;
+    text-shadow: 0 1px 7px rgba(0, 0, 0, 0.95);
+}
+
+.tizen-tv .poster,
+.tizen-tv .poster-artwork {
+    transition: none;
+}
 
 .tizen-tv .media-grid.list-view .media-card,
 .tizen-tv .media-grid.list-view .skeleton {

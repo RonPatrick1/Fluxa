@@ -5,7 +5,7 @@
     if (basePath === "/") { basePath = ""; }
     var isTizenTv = window.location.search.indexOf("platform=tizen") !== -1;
     var isTeslaBrowser = detectTeslaBrowser();
-    var clientVersion = "20260820-35";
+    var clientVersion = "20260830-01";
     var fredPlayerSessionKey = "fluxa-fredplayer-session-v1";
 
     function detectTeslaBrowser() {
@@ -103,7 +103,8 @@
         playerControlsResizeObserver: null,
         pauseReason: "",
         lastPlaybackToggleAt: 0,
-        playerAssignedAt: 0
+        playerAssignedAt: 0,
+        tvLibraryFocusKey: getStoredPreference("fluxa-tv-library-focus") || ""
     };
 
     var elements = {};
@@ -202,6 +203,7 @@
         bindPlayer();
         installVideoMediaSession();
         bindFredPlayerFrame();
+        bindTvFocusMemory();
         registerTizenRemoteKeys();
         bindRemoteKeys();
         elements.playPlaylist.addEventListener("click", function () { startActiveCollection(false); });
@@ -268,6 +270,7 @@
             updateHeading();
             document.body.classList.remove("app-booting");
             return loadMedia().then(function () {
+                restoreTvLibraryFocus();
                 if (isTizenTv && window.parent !== window) {
                     window.parent.postMessage({ type: "fluxa-tv-ready", screen: "library" }, "*");
                 }
@@ -430,6 +433,7 @@
         }
         var message = fredPlayerQueueMessage(paths, sourceName, sourceKind, shuffle, startPath);
         if (isTizenTv) {
+            rememberTvLibraryFocus(document.activeElement);
             api("/api/fredplayer/launch", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -456,12 +460,63 @@
         }
     }
 
+    function openFredPlayerPlaylist(playlistName, sourceName, shuffle, startPath) {
+        if (!playlistName) {
+            showToast("This playlist is unavailable.", true);
+            return;
+        }
+        var message = {
+            type: "fluxa-fredplayer-playlist",
+            playlistName: playlistName,
+            sourceName: sourceName,
+            sourceKind: "Playlist",
+            shuffle: shuffle === true,
+            startPath: startPath || ""
+        };
+        if (isTizenTv) {
+            rememberTvLibraryFocus(document.activeElement);
+            api("/api/fredplayer/launch", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    playlist_name: playlistName,
+                    source_name: sourceName,
+                    source_kind: "Playlist",
+                    shuffle: shuffle === true,
+                    start_path: startPath || "",
+                    return_url: window.location.href
+                })
+            }).then(function (result) {
+                window.location.assign("https://patrick-lamphier.com/fredplayer-media/web/auth/fluxa-launch/"
+                    + encodeURIComponent(result.ticket));
+            }).catch(function (error) {
+                showToast(error.message, true);
+            });
+            return;
+        }
+        ensureFredPlayerFrame();
+        state.pendingMusicQueue = message;
+        if (!sendPendingFredPlayerQueue()) {
+            showToast("Opening " + sourceName + " in FredPlayer…");
+        }
+    }
+
     function sendPendingFredPlayerQueue() {
         var message = state.pendingMusicQueue;
         if (!message || !elements.fredPlayerFrame || !elements.fredPlayerFrame.contentWindow) { return false; }
         try {
             var bridge = elements.fredPlayerFrame.contentWindow.FluxaFredPlayer;
-            if (bridge && typeof bridge.playQueue === "function") {
+            if (bridge && message.type === "fluxa-fredplayer-playlist"
+                    && typeof bridge.playPlaylist === "function") {
+                elements.fredPlayerLayer.hidden = false;
+                document.body.classList.add("fredplayer-open");
+                state.pendingMusicQueue = null;
+                bridge.playPlaylist(message.playlistName, message.sourceName,
+                    message.shuffle, message.startPath);
+                return true;
+            }
+            if (bridge && message.type !== "fluxa-fredplayer-playlist"
+                    && typeof bridge.playQueue === "function") {
                 elements.fredPlayerLayer.hidden = false;
                 document.body.classList.add("fredplayer-open");
                 state.pendingMusicQueue = null;
@@ -479,6 +534,7 @@
     }
 
     function openFredPlayerTrackOnTv(path) {
+        rememberTvLibraryFocus(document.activeElement);
         api("/api/fredplayer/launch", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -550,7 +606,7 @@
                 type: "fluxa-fredplayer-stop"
             }, "https://patrick-lamphier.com");
         }
-        focusFirstMediaCard();
+        if (!restoreTvLibraryFocus()) { focusFirstMediaCard(); }
     }
 
     function bindFredPlayerFrame() {
@@ -968,6 +1024,9 @@
         var meta = document.createElement("p");
         card.className = "media-card folder-card focusable";
         card.setAttribute("data-focusable", "true");
+        card.setAttribute("data-tv-focus-key", JSON.stringify([
+            "folder", folder.library_id || "", folder.path || "", folder.name || ""
+        ]));
         card.setAttribute("aria-label", "Open folder " + folder.name);
         poster.className = "poster";
         initials.className = "poster-initials";
@@ -1025,6 +1084,10 @@
         var meta = document.createElement("p");
         card.className = "media-card collection-card focusable";
         card.setAttribute("data-focusable", "true");
+        card.setAttribute("data-tv-focus-key", JSON.stringify([
+            "collection", collection.collection_type || "", collection.name || "",
+            collection.artist || "", collection.title || ""
+        ]));
         card.setAttribute("aria-label", "Open " + collection.title);
         poster.className = "poster";
         initials.className = "poster-initials";
@@ -1033,6 +1096,7 @@
             var artwork = document.createElement("img");
             artwork.className = "poster-artwork";
             artwork.alt = "";
+            artwork.decoding = "async";
             poster.appendChild(artwork);
             loadThumbnailWhenVisible(artwork, poster, collection.thumbnail_url);
         }
@@ -1233,6 +1297,7 @@
             var artwork = document.createElement("img");
             artwork.className = "poster-artwork";
             artwork.alt = "";
+            artwork.decoding = "async";
             poster.appendChild(artwork);
             loadThumbnailWhenVisible(artwork, poster, item.thumbnail_url);
         }
@@ -1610,6 +1675,14 @@
         state.collectionStartPending = true;
         elements.playPlaylist.disabled = true;
         elements.shufflePlaylist.disabled = true;
+        if (collection.collection_type === "playlist") {
+            openFredPlayerPlaylist(collection.name, collection.title, shuffle,
+                startItem ? startItem.fredplayer_path : "");
+            state.collectionStartPending = false;
+            elements.playPlaylist.disabled = state.mediaTotal === 0;
+            elements.shufflePlaylist.disabled = state.mediaTotal === 0;
+            return;
+        }
         allMusicCollectionItems(collection).then(function (items) {
             var paths = items.map(function (item) { return item.fredplayer_path; }).filter(Boolean);
             openFredPlayerQueue(paths, collection.title,
@@ -1874,6 +1947,7 @@
     }
 
     function openPlayer(mediaId, queueIndex) {
+        rememberTvLibraryFocus(document.activeElement);
         if (typeof queueIndex === "number") {
             state.queueIndex = queueIndex;
         } else {
@@ -2477,6 +2551,7 @@
             card.setAttribute("data-start-ms", String(chapter.start_ms));
             artwork.className = "chapter-artwork";
             image.alt = "";
+            image.decoding = "async";
             image.dataset.src = chapter.thumbnail_url ? appUrl(chapter.thumbnail_url) : "";
             current.className = "chapter-current-indicator";
             current.textContent = "Now playing";
@@ -3434,7 +3509,63 @@
         elements.modal.hidden = true;
         document.body.classList.remove("player-open");
         document.body.style.overflow = "";
-        loadMedia();
+        loadMedia().then(restoreTvLibraryFocus);
+    }
+
+    function bindTvFocusMemory() {
+        if (!isTizenTv) { return; }
+        document.addEventListener("focusin", function (event) {
+            if (!elements.modal.hidden || document.body.classList.contains("fredplayer-open")) { return; }
+            rememberTvLibraryFocus(event.target);
+        });
+    }
+
+    function tvLibraryFocusKey(element) {
+        if (!element || element.nodeType !== 1
+                || element.getAttribute("data-focusable") !== "true") { return ""; }
+        if (element.id) { return "id:" + element.id; }
+        var attributes = [
+            "data-tv-focus-key", "data-media-id", "data-library", "data-playlist",
+            "data-filter", "data-music-view"
+        ];
+        var index;
+        for (index = 0; index < attributes.length; index += 1) {
+            if (element.hasAttribute(attributes[index])) {
+                return attributes[index] + ":" + element.getAttribute(attributes[index]);
+            }
+        }
+        return "";
+    }
+
+    function rememberTvLibraryFocus(element) {
+        if (!isTizenTv) { return; }
+        var key = tvLibraryFocusKey(element);
+        if (!key) { return; }
+        state.tvLibraryFocusKey = key;
+        setStoredPreference("fluxa-tv-library-focus", key);
+    }
+
+    function restoreTvLibraryFocus() {
+        if (!isTizenTv || !elements.modal.hidden) { return false; }
+        var wanted = state.tvLibraryFocusKey;
+        var nodes = document.querySelectorAll("[data-focusable='true']:not([disabled])");
+        var target = null;
+        var index;
+        if (wanted) {
+            for (index = 0; index < nodes.length; index += 1) {
+                if (isVisible(nodes[index]) && tvLibraryFocusKey(nodes[index]) === wanted) {
+                    target = nodes[index];
+                    break;
+                }
+            }
+        }
+        if (!target) {
+            target = elements.grid.querySelector(".media-card:not([disabled])")
+                || document.querySelector(".nav-item.active[data-focusable='true']");
+        }
+        if (!target) { return false; }
+        focusElement(target);
+        return true;
     }
 
     function rememberCurrentFrame() {
@@ -3635,6 +3766,7 @@
         if (source) {
             var image = document.createElement("img");
             image.alt = "";
+            image.decoding = "async";
             image.src = source;
             hold.appendChild(image);
         }
@@ -4316,10 +4448,25 @@
     }
 
     function focusElement(element) {
-        element.focus();
+        try { element.focus({ preventScroll: true }); }
+        catch (_error) { element.focus(); }
         if (!isTizenTv || !element.scrollIntoView) { return; }
-        try { element.scrollIntoView({ block: "center", inline: "nearest", behavior: "auto" }); }
-        catch (_error) { element.scrollIntoView(false); }
+        var rect = element.getBoundingClientRect();
+        var top = 86;
+        var bottom = window.innerHeight - 22;
+        var left = 14;
+        var right = window.innerWidth - 14;
+        if (elements.sidebar && elements.sidebar.contains(element)) {
+            var sidebarRect = elements.sidebar.getBoundingClientRect();
+            top = sidebarRect.top + 10;
+            bottom = sidebarRect.bottom - 10;
+            left = sidebarRect.left;
+            right = sidebarRect.right;
+        }
+        if (rect.top >= top && rect.bottom <= bottom
+                && rect.left >= left && rect.right <= right) { return; }
+        try { element.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" }); }
+        catch (_scrollError) { element.scrollIntoView(false); }
     }
 
     function centerOf(rect) {
